@@ -21,7 +21,7 @@ import numpy as np
 
 from .pitch import PitchFrame, analyse_signal, hz_to_midi, midi_to_name
 from .segment import Note, segment_notes
-from .sessions import read_wav
+from .sessions import HUM_AUDIO, LEGACY_HUM, read_audio
 
 GLIDE_SEMITONES_PER_SEC = 2.0
 """Above this rate of pitch change, a frame is sliding rather than held."""
@@ -333,11 +333,15 @@ def format_report(report: Diagnosis, expected: list[str] | None = None) -> str:
 
 
 def load_run(path) -> tuple[np.ndarray, int]:
-    """Load a run directory's hum.wav, or a bare .wav file."""
+    """Load a run directory's hum recording, or a bare audio file."""
     from pathlib import Path
 
     path = Path(path)
-    wav = path if path.suffix == ".wav" else path / "hum.wav"
-    if not wav.is_file():
-        raise FileNotFoundError(f"no hum.wav in {path}")
-    return read_wav(wav)
+    if path.is_file():
+        return read_audio(path)
+
+    for name in (HUM_AUDIO, LEGACY_HUM):
+        candidate = path / name
+        if candidate.is_file():
+            return read_audio(candidate)
+    raise FileNotFoundError(f"no hum recording in {path}")

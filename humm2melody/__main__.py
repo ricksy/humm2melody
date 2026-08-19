@@ -26,17 +26,34 @@ def analyze_main(argv: list[str]) -> int:
         action="store_true",
         help="search detection parameters for the best match to --expect",
     )
-    parser.add_argument("--min-confidence", type=float, default=0.55)
-    parser.add_argument("--min-rms", type=float, default=0.006)
-    parser.add_argument("--min-duration", type=float, default=0.09)
-    parser.add_argument("--smoothing", type=int, default=5)
-    parser.add_argument("--gap-tolerance", type=float, default=0.07)
+    # Defaults come from the dials rather than being written out again here.
+    # A diagnostic that does not reproduce what the app does is worse than
+    # none, and duplicated constants drift apart the moment one is retuned.
     parser.add_argument(
-        "--max-glide-rate",
-        type=float,
-        default=5.0,
-        help="semitones/sec above which pitch counts as sliding; 0 disables",
+        "--sensitivity",
+        type=int,
+        default=5,
+        metavar="1-9",
+        help="pitch dial level to analyse at (default: 5)",
     )
+    parser.add_argument(
+        "--pause",
+        type=int,
+        default=5,
+        metavar="1-9",
+        help="pause dial level to analyse at (default: 5)",
+    )
+    for flag, kind in (
+        ("--min-confidence", float),
+        ("--min-rms", float),
+        ("--min-duration", float),
+        ("--smoothing", int),
+        ("--gap-tolerance", float),
+        ("--max-glide-rate", float),
+    ):
+        parser.add_argument(
+            flag, type=kind, default=None, help="override the dial-derived value"
+        )
     args = parser.parse_args(argv)
 
     from . import analysis
@@ -56,16 +73,23 @@ def analyze_main(argv: list[str]) -> int:
         print(f"\nbest: edits={best[0]} with {best[1]}")
         return 0
 
-    report = analysis.diagnose(
-        audio,
-        sample_rate,
-        min_confidence=args.min_confidence,
-        min_rms=args.min_rms,
-        min_duration=args.min_duration,
-        smoothing=args.smoothing,
-        gap_tolerance=args.gap_tolerance,
-        max_glide_rate=args.max_glide_rate or None,
-    )
+    from .segment import pause_settings, sensitivity_settings
+
+    settings = {**sensitivity_settings(args.sensitivity), **pause_settings(args.pause)}
+    settings.setdefault("min_confidence", 0.55)
+    for name in (
+        "min_confidence",
+        "min_rms",
+        "min_duration",
+        "smoothing",
+        "gap_tolerance",
+        "max_glide_rate",
+    ):
+        override = getattr(args, name)
+        if override is not None:
+            settings[name] = override or None if name == "max_glide_rate" else override
+
+    report = analysis.diagnose(audio, sample_rate, **settings)
     print(analysis.format_report(report, expected))
     return 0
 

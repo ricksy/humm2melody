@@ -123,39 +123,26 @@ already exists.
 
 ---
 
-## 5. Compressed audio storage
+## 5. Compressed audio storage — done in v0.6.0
 
-**Asked for:** save audio as MP3 instead of WAV.
+The hum is stored as **FLAC** and the playback as **MP3**, which is the split
+the reasoning pointed at: the hum is the analysis master and must stay
+lossless, while the playback is regenerable from `notes.json` and so loses
+nothing by being lossy.
 
-**Recommendation: yes for sharing, no for the stored master — and FLAC, not
-MP3, if the goal is disk space.** The reasoning, since it is not obvious:
+Measured on a real 2.5 s run:
 
-`hum.wav` is not just a recording, it is the analysis master. It exists so a
-run can be re-analysed later at different thresholds, and `analyze` and the
-dials both depend on that. MP3 is lossy in exactly the places that matter here:
-
-- it smears transients, and transients are now load-bearing — onset detection
-  is what separates repeated notes for the pause dial
-- it alters low-frequency phase, and a low hum sits at 100–200 Hz where the
-  encoder has least headroom
-- re-analysis would then be measuring the encoder as much as the voice
-
-Three options, in order of preference:
-
-| Option | Size | Analysis | Cost |
+| File | Was | Now | Saving |
 | --- | --- | --- | --- |
-| **FLAC master** | ~50–60% of WAV | lossless, identical results | needs `soundfile`/libsndfile |
-| **WAV master + MP3 export** | unchanged on disk | untouched | an encoder for the export only |
-| **MP3 master** | ~10% of WAV | degraded, subtly | cheapest disk, worst fidelity |
+| hum | 108 KB (WAV) | 48 KB (FLAC) | 55% |
+| playback | 246 KB (WAV) | 12 KB (MP3) | 95% |
 
-For context on the actual numbers: `hum.wav` is mono 16-bit at 22.05 kHz, about
-44 KB per second — roughly 2.6 MB per minute of humming. Twenty-five runs so
-far come to a few tens of megabytes. This is a real but not urgent problem.
+Runs recorded before the switch keep their `.wav` files and are still read
+without migration. Rewriting somebody's recordings to save disk is not a trade
+the app gets to make on their behalf, so `Session.hum_path` simply prefers the
+current format and falls back to the older one.
 
-**Suggested shape.** Keep a lossless master (switch it to FLAC if size matters),
-and add an explicit "export this run as MP3" action for sharing, where lossy is
-exactly right. `playback.wav` is a different case — it is regenerable from
-`notes.json`, so it could be dropped entirely rather than compressed.
+**Still open.** Exporting a run as a single shareable file.
 
 ---
 

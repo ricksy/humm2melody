@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (266 tests, no microphone required). But treat it
+> It works, and it is tested (274 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
@@ -121,18 +121,27 @@ want to inspect later.
 
 ```
 recordings/2026-08-19_14-32-05/
-    hum.wav          the raw microphone input, 16-bit mono
-    playback.wav     the tones the app plays back
+    hum.flac         the raw microphone input, lossless
+    playback.mp3     the tones the app plays back
     notes.json       detected notes, timings, tuning, plus run metadata
     pitch_track.csv  every analysis frame: time, freq, confidence, rms
 ```
+
+The two formats are chosen for different reasons. The hum is the **analysis
+master** — `analyze` and both dials re-read it — so it stays lossless; FLAC is
+about 45% the size of WAV with identical results. The playback is regenerable
+from `notes.json` at any time, so lossy costs nothing and MP3 is about 5% of
+the WAV. On a 2.5 s run that is 354 KB down to 60 KB.
+
+Runs recorded before the switch keep their `.wav` files and are read without
+migration.
 
 `pitch_track.csv` is the one to reach for when a note comes out wrong: it is the
 detector's frame-by-frame opinion *before* smoothing and segmentation discarded
 anything, at roughly 43 rows per second. Plot `freq` against `time` and an
 octave slip or a dropped note is usually obvious.
 
-`playback.wav` is rendered when the run is saved rather than captured from the
+`playback.mp3` is rendered when the run is saved rather than captured from the
 speaker, so it is present even if you never pressed play. Rendering is
 deterministic, so it is byte-for-byte the audio you would have heard.
 

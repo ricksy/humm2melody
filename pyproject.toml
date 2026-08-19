@@ -1,6 +1,6 @@
 [project]
 name = "humm2melody"
-version = "0.5.0"
+version = "0.6.0"
 description = "Hum a melody into your microphone and get the notes to play on a keyboard."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -9,6 +9,7 @@ license-files = ["LICENSE"]
 dependencies = [
     "numpy>=1.26",
     "sounddevice>=0.4.6",
+    "soundfile>=0.14.0",
     "textual>=0.60",
 ]
 

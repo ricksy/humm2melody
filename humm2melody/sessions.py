@@ -20,7 +20,6 @@ import csv
 import json
 import re
 import shutil
-import wave
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -33,9 +32,20 @@ from .playback import render
 from .segment import Note
 
 MANIFEST = "notes.json"
-HUM_WAV = "hum.wav"
-PLAYBACK_WAV = "playback.wav"
 PITCH_CSV = "pitch_track.csv"
+
+HUM_AUDIO = "hum.flac"
+"""The hum is stored losslessly: it is the master that re-analysis reads."""
+
+PLAYBACK_AUDIO = "playback.mp3"
+"""The tones are lossy: they are regenerable from notes.json at any time."""
+
+LEGACY_HUM = "hum.wav"
+LEGACY_PLAYBACK = "playback.wav"
+
+# Kept so older code and tests keep working.
+HUM_WAV = LEGACY_HUM
+PLAYBACK_WAV = LEGACY_PLAYBACK
 
 DIR_FORMAT = "%Y-%m-%d_%H-%M-%S"
 LABEL_SEPARATOR = "__"
@@ -51,23 +61,36 @@ def slugify(label: str) -> str:
     return cleaned[:MAX_LABEL]
 
 
-def write_wav(path: Path, samples: np.ndarray, sample_rate: int) -> None:
-    """Write mono float samples as 16-bit PCM."""
-    clipped = np.clip(np.asarray(samples, dtype=np.float64), -1.0, 1.0)
-    pcm = (clipped * 32767.0).astype("<i2")
-    with wave.open(str(path), "wb") as handle:
-        handle.setnchannels(1)
-        handle.setsampwidth(2)
-        handle.setframerate(sample_rate)
-        handle.writeframes(pcm.tobytes())
+_FORMATS = {
+    ".flac": ("FLAC", "PCM_16"),
+    ".mp3": ("MP3", "MPEG_LAYER_III"),
+    ".wav": ("WAV", "PCM_16"),
+    ".ogg": ("OGG", "VORBIS"),
+}
 
 
-def read_wav(path: Path) -> tuple[np.ndarray, int]:
-    """Read a mono 16-bit PCM file back into floats."""
-    with wave.open(str(path), "rb") as handle:
-        sample_rate = handle.getframerate()
-        raw = handle.readframes(handle.getnframes())
-    return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32767.0, sample_rate
+def write_audio(path: Path, samples: np.ndarray, sample_rate: int) -> None:
+    """Write mono float samples, picking the codec from the file extension."""
+    import soundfile as sf
+
+    audio = np.clip(np.asarray(samples, dtype=np.float32), -1.0, 1.0)
+    fmt, subtype = _FORMATS.get(Path(path).suffix.lower(), ("WAV", "PCM_16"))
+    sf.write(str(path), audio, int(sample_rate), format=fmt, subtype=subtype)
+
+
+def read_audio(path: Path) -> tuple[np.ndarray, int]:
+    """Read any supported audio file into mono floats."""
+    import soundfile as sf
+
+    audio, sample_rate = sf.read(str(path), dtype="float32", always_2d=False)
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    return np.asarray(audio, dtype=np.float32), int(sample_rate)
+
+
+# Older names, kept so existing callers and .wav files keep working.
+write_wav = write_audio
+read_wav = read_audio
 
 
 def read_pitch_track(path: Path) -> list[PitchFrame]:
@@ -115,13 +138,27 @@ class Session:
         count = len(self.notes)
         return f"{count} note{'' if count == 1 else 's'} · {self.duration:.1f}s"
 
+    def _audio_path(self, preferred: str, legacy: str) -> Path:
+        """The stored audio, preferring the current format.
+
+        Runs recorded before the switch to FLAC and MP3 still hold .wav files,
+        and they stay readable rather than being migrated: the recordings are
+        the user's data, and rewriting them to save disk is not a trade the
+        app gets to make on their behalf.
+        """
+        current = self.path / preferred
+        if current.is_file():
+            return current
+        older = self.path / legacy
+        return older if older.is_file() else current
+
     @property
     def hum_path(self) -> Path:
-        return self.path / HUM_WAV
+        return self._audio_path(HUM_AUDIO, LEGACY_HUM)
 
     @property
     def playback_path(self) -> Path:
-        return self.path / PLAYBACK_WAV
+        return self._audio_path(PLAYBACK_AUDIO, LEGACY_PLAYBACK)
 
     @property
     def pitch_track_path(self) -> Path:
@@ -172,8 +209,10 @@ class SessionStore:
 
         duration = float(len(audio) / sample_rate) if sample_rate else 0.0
 
-        write_wav(path / HUM_WAV, audio, sample_rate)
-        write_wav(path / PLAYBACK_WAV, render(notes, PLAYBACK_RATE), PLAYBACK_RATE)
+        write_audio(path / HUM_AUDIO, audio, sample_rate)
+        write_audio(
+            path / PLAYBACK_AUDIO, render(notes, PLAYBACK_RATE), PLAYBACK_RATE
+        )
 
         with open(path / PITCH_CSV, "w", newline="") as handle:
             writer = csv.writer(handle)
@@ -211,8 +250,8 @@ class SessionStore:
             "sample_rate": session.sample_rate,
             "playback_sample_rate": PLAYBACK_RATE,
             "files": {
-                "hum": HUM_WAV,
-                "playback": PLAYBACK_WAV,
+                "hum": session.hum_path.name,
+                "playback": session.playback_path.name,
                 "pitch_track": PITCH_CSV,
             },
             "notes": [

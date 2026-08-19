@@ -14,7 +14,7 @@ from humm2melody.audio import AudioError, LiveReading
 from humm2melody.pitch import PitchFrame, midi_to_hz
 from humm2melody.profiles import Profile, ProfileStore, guest
 from humm2melody.segment import Note
-from humm2melody.sessions import HUM_WAV, MANIFEST, PITCH_CSV, PLAYBACK_WAV
+from humm2melody.sessions import HUM_AUDIO, MANIFEST, PITCH_CSV, PLAYBACK_AUDIO
 from humm2melody.tui import (
     Humm2MelodyApp,
     MelodySequence,
@@ -252,7 +252,7 @@ async def test_every_run_is_saved_by_default(tmp_path: Path):
 
         runs = list(tmp_path.iterdir())
         assert len(runs) == 1
-        for name in (HUM_WAV, PLAYBACK_WAV, PITCH_CSV, MANIFEST):
+        for name in (HUM_AUDIO, PLAYBACK_AUDIO, PITCH_CSV, MANIFEST):
             assert (runs[0] / name).is_file()
 
 

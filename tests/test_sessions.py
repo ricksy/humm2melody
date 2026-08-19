@@ -13,14 +13,18 @@ import pytest
 from humm2melody.pitch import PitchFrame, midi_to_hz
 from humm2melody.segment import Note
 from humm2melody.sessions import (
-    HUM_WAV,
+    HUM_AUDIO,
+    LEGACY_HUM,
+    LEGACY_PLAYBACK,
     MANIFEST,
     PITCH_CSV,
-    PLAYBACK_WAV,
+    PLAYBACK_AUDIO,
     Session,
     SessionStore,
+    read_audio,
     read_wav,
     slugify,
+    write_audio,
     write_wav,
 )
 
@@ -108,7 +112,7 @@ def test_save_writes_every_artifact(tmp_path: Path):
     store = SessionStore(tmp_path)
     session = save_one(store)
 
-    for name in (HUM_WAV, PLAYBACK_WAV, PITCH_CSV, MANIFEST):
+    for name in (HUM_AUDIO, PLAYBACK_AUDIO, PITCH_CSV, MANIFEST):
         assert (session.path / name).is_file(), f"{name} missing"
 
 
@@ -257,7 +261,7 @@ def test_rename_keeps_the_files(tmp_path: Path):
     session = save_one(store)
     store.rename(session, "kept")
 
-    for name in (HUM_WAV, PLAYBACK_WAV, PITCH_CSV, MANIFEST):
+    for name in (HUM_AUDIO, PLAYBACK_AUDIO, PITCH_CSV, MANIFEST):
         assert (session.path / name).is_file()
 
 
@@ -428,3 +432,88 @@ def test_starring_rejects_a_run_outside_the_store(tmp_path: Path):
 
     with pytest.raises(ValueError):
         store.set_starred(outsider, True)
+
+
+# -- audio formats ---------------------------------------------------------
+
+
+def test_hum_is_stored_losslessly_as_flac(tmp_path: Path):
+    """The hum is the analysis master, so it must survive a round trip intact."""
+    store = SessionStore(tmp_path)
+    audio = sample_audio(0.5)
+    session = store.save(
+        audio=audio, sample_rate=SR, frames=sample_frames(), notes=sample_notes()
+    )
+
+    assert session.hum_path.name == HUM_AUDIO
+    restored, rate = read_audio(session.hum_path)
+    assert rate == SR
+    assert restored.size == audio.size
+    assert np.max(np.abs(restored - audio)) < 1e-3
+
+
+def test_playback_is_stored_as_mp3(tmp_path: Path):
+    store = SessionStore(tmp_path)
+    session = save_one(store)
+
+    assert session.playback_path.name == PLAYBACK_AUDIO
+    restored, _ = read_audio(session.playback_path)
+    assert np.max(np.abs(restored)) > 0.1
+
+
+def test_flac_is_much_smaller_than_wav(tmp_path: Path):
+    audio = sample_audio(2.0)
+    write_audio(tmp_path / "a.wav", audio, SR)
+    write_audio(tmp_path / "a.flac", audio, SR)
+    assert (tmp_path / "a.flac").stat().st_size < (tmp_path / "a.wav").stat().st_size
+
+
+def test_the_manifest_records_the_real_filenames(tmp_path: Path):
+    store = SessionStore(tmp_path)
+    session = save_one(store)
+    files = json.loads(session.manifest_path.read_text())["files"]
+    assert files["hum"] == HUM_AUDIO
+    assert files["playback"] == PLAYBACK_AUDIO
+
+
+def test_a_legacy_wav_run_is_still_readable(tmp_path: Path):
+    """Runs recorded before the format switch must keep working, unmigrated."""
+    store = SessionStore(tmp_path)
+    session = save_one(store)
+    audio = sample_audio(0.4)
+
+    # Rewrite it the old way.
+    session.hum_path.unlink()
+    session.playback_path.unlink()
+    write_audio(session.path / LEGACY_HUM, audio, SR)
+    write_audio(session.path / LEGACY_PLAYBACK, audio, SR)
+
+    reloaded = store.list()[0]
+    assert reloaded.hum_path.name == LEGACY_HUM
+    assert reloaded.playback_path.name == LEGACY_PLAYBACK
+    assert read_audio(reloaded.hum_path)[0].size == audio.size
+
+
+def test_a_run_with_both_formats_prefers_the_current_one(tmp_path: Path):
+    store = SessionStore(tmp_path)
+    session = save_one(store)
+    write_audio(session.path / LEGACY_HUM, sample_audio(0.2), SR)
+
+    assert store.list()[0].hum_path.name == HUM_AUDIO
+
+
+def test_write_audio_picks_the_format_from_the_extension(tmp_path: Path):
+    import soundfile as sf
+
+    audio = sample_audio(0.3)
+    for name, expected in (("x.flac", "FLAC"), ("x.wav", "WAV"), ("x.mp3", "MP3")):
+        write_audio(tmp_path / name, audio, SR)
+        assert sf.info(str(tmp_path / name)).format == expected
+
+
+def test_audio_round_trip_clips_instead_of_wrapping(tmp_path: Path):
+    loud = np.array([2.0, -2.0, 0.0], dtype=np.float32)
+    write_audio(tmp_path / "loud.flac", loud, SR)
+    restored, _ = read_audio(tmp_path / "loud.flac")
+    assert restored[0] > 0.99
+    assert restored[1] < -0.99
