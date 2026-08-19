@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (458 tests, no microphone required). But treat it
+> It works, and it is tested (460 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into

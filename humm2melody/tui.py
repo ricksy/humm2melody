@@ -1287,7 +1287,10 @@ class Humm2MelodyApp(App):
     #hint { height: 1; margin-top: 1; color: $text-muted; }
 
     #notes-row { height: 1fr; min-height: 8; }
-    #detail-pane { width: auto; height: 1fr; scrollbar-size-vertical: 1; }
+    /* A fixed width: a scroll container cannot size itself to its content,
+       and `auto` collapses it to a sliver. Wide enough for the longest note
+       spelling any notation produces. */
+    #detail-pane { width: 58; height: 1fr; scrollbar-size-vertical: 1; }
     #detail { width: auto; height: auto; }
     #controls { width: 1fr; height: auto; padding-left: 3; }
     #controls Button { width: 18; min-width: 18; margin-right: 2; }

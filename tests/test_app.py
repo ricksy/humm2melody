@@ -2469,3 +2469,26 @@ async def test_the_app_fits_a_short_terminal(tmp_path: Path):
         await record_once(pilot)
         screen = app.screen
         assert screen.virtual_size.height <= screen.region.height
+
+
+async def test_the_table_pane_is_wide_enough_for_the_table(tmp_path: Path):
+    """A scroll container cannot size itself to its content; `auto` collapses it."""
+    app = make_app(tmp_path)
+    async with app.run_test(size=(156, 50)) as pilot:
+        await record_once(pilot)
+        pane = app.query_one("#detail-pane")
+        table = app.query_one("#detail")
+        assert table.region.width >= 30           # not squashed to a sliver
+        assert pane.region.width >= table.region.width
+
+
+async def test_the_table_stays_readable_in_every_notation(tmp_path: Path):
+    """Solfège and Sargam spell notes longer than English does."""
+    app = make_app(tmp_path)
+    async with app.run_test(size=(156, 50)) as pilot:
+        await record_once(pilot)
+        pane = app.query_one("#detail-pane")
+        for _ in range(4):
+            await pilot.press("n")
+            await pilot.pause()
+            assert app.query_one("#detail").region.width <= pane.region.width
