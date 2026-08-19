@@ -103,6 +103,7 @@ class Session:
     notes: list[Note] = field(default_factory=list)
     duration: float = 0.0
     sample_rate: int = 0
+    starred: bool = False
 
     @property
     def display_name(self) -> str:
@@ -201,6 +202,7 @@ class SessionStore:
             "version": 1,
             "timestamp": session.timestamp.isoformat(timespec="seconds"),
             "label": session.label,
+            "starred": session.starred,
             "duration": round(session.duration, 4),
             "sample_rate": session.sample_rate,
             "playback_sample_rate": PLAYBACK_RATE,
@@ -259,6 +261,7 @@ class SessionStore:
             path=path,
             timestamp=timestamp,
             label=str(data.get("label", "")),
+            starred=bool(data.get("starred", False)),
             notes=notes,
             duration=float(data.get("duration", 0.0)),
             sample_rate=int(data.get("sample_rate", 0)),
@@ -303,6 +306,19 @@ class SessionStore:
             session.path.rename(target)
             session.path = target
         session.label = label
+        self._write_manifest(session)
+        return session
+
+    def set_starred(self, session: Session, starred: bool) -> Session:
+        """Mark a run as a favourite, or clear the mark.
+
+        Stored in the run's own manifest rather than a central index, so a run
+        directory stays self-describing: copy it elsewhere and it is still
+        starred, delete it and nothing dangles.
+        """
+        if not self._owns(session):
+            raise ValueError(f"{session.path} is not inside {self.root}")
+        session.starred = bool(starred)
         self._write_manifest(session)
         return session
 

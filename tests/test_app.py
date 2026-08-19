@@ -15,7 +15,7 @@ from humm2melody.pitch import PitchFrame, midi_to_hz
 from humm2melody.segment import Note
 from humm2melody.sessions import HUM_WAV, MANIFEST, PITCH_CSV, PLAYBACK_WAV
 from humm2melody.tui import Humm2MelodyApp, MelodySequence, PianoRoll
-from textual.widgets import Button, Input, ListView, Static
+from textual.widgets import Button, Input, Label, ListView, Static
 
 SR = 22050
 
@@ -656,3 +656,62 @@ async def test_loading_a_run_restores_its_audio(tmp_path: Path):
         await pilot.pause()
         assert app.audio is not None
         assert app.audio_rate == SR
+
+
+# -- starring --------------------------------------------------------------
+
+
+async def test_s_stars_the_highlighted_run(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        assert app.selected_session.starred is False
+
+        await pilot.press("s")
+        await pilot.pause()
+        assert app.sessions[0].starred is True
+
+
+async def test_s_toggles_the_star_off_again(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("s")
+        await pilot.pause()
+        await pilot.press("s")
+        await pilot.pause()
+        assert app.sessions[0].starred is False
+
+
+async def test_a_starred_run_is_marked_in_the_sidebar(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("s")
+        await pilot.pause()
+
+        runs = app.query_one("#runs", ListView)
+        rendered = " ".join(str(item.query_one(Label).content) for item in runs.children)
+        assert "★" in rendered
+
+
+async def test_starring_does_nothing_without_a_selection(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("s")
+        await pilot.pause()
+        assert app.sessions == []
+
+
+async def test_deleting_a_starred_run_warns_that_it_is_starred(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("s")
+        await pilot.pause()
+
+        await pilot.press("d")
+        await pilot.pause()
+        dialog = " ".join(str(w.content) for w in app.screen.query(Label))
+        assert "starred" in dialog.lower()
+        await pilot.press("n")

@@ -483,6 +483,7 @@ class Humm2MelodyApp(App):
     BINDINGS = [
         ("space", "toggle", "Start / Stop"),
         ("p", "play", "Play back"),
+        ("s", "star_run", "Star run"),
         ("r", "rename_run", "Rename run"),
         ("d", "delete_run", "Delete run"),
         ("left_square_bracket", "less_sensitive", "Pitch −"),
@@ -557,7 +558,10 @@ class Humm2MelodyApp(App):
         # One key per line: the sidebar is too narrow for a single run-on line,
         # which wraps mid-word.
         self.query_one("#run-hint", Static).update(
-            Text("enter  load\nr      rename\nd      delete", style="dim")
+            Text(
+                "enter  load\ns      star\nr      rename\nd      delete",
+                style="dim",
+            )
         )
         self.query_one("#sidebar-path", Static).update(
             Text(
@@ -756,7 +760,10 @@ class Humm2MelodyApp(App):
 
         runs.clear()
         for session in self.sessions:
-            label = Text(session.display_name, style="bold")
+            label = Text()
+            if session.starred:
+                label.append("★ ", style=HIGHLIGHT)
+            label.append(session.display_name, style="bold")
             label.append(f"\n{session.summary}", style="dim")
             runs.append(ListItem(Label(label)))
 
@@ -808,6 +815,20 @@ class Humm2MelodyApp(App):
         else:
             self._set_hint(f"Loaded {session.path.name} · this run has no notes")
 
+    def action_star_run(self) -> None:
+        """Toggle the favourite mark on the highlighted run."""
+        session = self.selected_session
+        if session is None or self.recorder.running:
+            return
+        try:
+            self.store.set_starred(session, not session.starred)
+        except (OSError, ValueError) as exc:
+            self._set_hint(Text(f"Could not star: {exc}", style="bold red"))
+            return
+        self.refresh_sessions(select=session.path)
+        state = "Starred" if session.starred else "Unstarred"
+        self._set_hint(f"{state} “{session.display_name}”.")
+
     def action_rename_run(self) -> None:
         session = self.selected_session
         if session is None or self.recorder.running:
@@ -842,10 +863,11 @@ class Humm2MelodyApp(App):
             self.refresh_sessions()
             self._set_hint(f"Deleted “{session.display_name}”.")
 
+        warning = "\nThis run is starred." if session.starred else ""
         self.push_screen(
             ConfirmScreen(
                 f"Delete “{session.display_name}” and its recordings?\n"
-                "This cannot be undone."
+                f"This cannot be undone.{warning}"
             ),
             apply,
         )

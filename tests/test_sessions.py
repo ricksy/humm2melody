@@ -354,3 +354,77 @@ def test_delete_refuses_a_directory_that_is_not_a_run(tmp_path: Path):
         store.delete(Session(path=stray, timestamp=datetime.now()))
 
     assert (stray / "important.txt").exists()
+
+
+# -- starring --------------------------------------------------------------
+
+
+def test_runs_start_unstarred(tmp_path: Path):
+    store = SessionStore(tmp_path)
+    assert save_one(store).starred is False
+
+
+def test_star_survives_a_reload(tmp_path: Path):
+    """The mark lives in the run's own manifest, not in memory."""
+    store = SessionStore(tmp_path)
+    session = save_one(store)
+    store.set_starred(session, True)
+
+    assert store.list()[0].starred is True
+
+
+def test_star_can_be_cleared(tmp_path: Path):
+    store = SessionStore(tmp_path)
+    session = save_one(store)
+    store.set_starred(session, True)
+    store.set_starred(session, False)
+
+    assert store.list()[0].starred is False
+
+
+def test_star_survives_a_rename(tmp_path: Path):
+    store = SessionStore(tmp_path)
+    session = save_one(store)
+    store.set_starred(session, True)
+    store.rename(session, "Reference take")
+
+    reloaded = store.list()[0]
+    assert reloaded.starred is True
+    assert reloaded.label == "Reference take"
+
+
+def test_star_is_written_into_the_manifest(tmp_path: Path):
+    store = SessionStore(tmp_path)
+    session = save_one(store)
+    store.set_starred(session, True)
+
+    assert json.loads(session.manifest_path.read_text())["starred"] is True
+
+
+def test_starring_only_affects_the_chosen_run(tmp_path: Path):
+    store = SessionStore(tmp_path)
+    first = save_one(store, when=datetime(2026, 8, 19, 10, 0, 0))
+    save_one(store, when=datetime(2026, 8, 19, 11, 0, 0))
+    store.set_starred(first, True)
+
+    assert [s.starred for s in store.list()] == [False, True]
+
+
+def test_a_run_from_an_older_manifest_loads_unstarred(tmp_path: Path):
+    """Manifests written before starring existed must still load."""
+    store = SessionStore(tmp_path)
+    session = save_one(store)
+    data = json.loads(session.manifest_path.read_text())
+    del data["starred"]
+    session.manifest_path.write_text(json.dumps(data))
+
+    assert store.list()[0].starred is False
+
+
+def test_starring_rejects_a_run_outside_the_store(tmp_path: Path):
+    store = SessionStore(tmp_path / "mine")
+    store.root.mkdir(parents=True)
+    outsider = Session(path=tmp_path / "elsewhere", timestamp=datetime.now())
+
+    with pytest.raises(ValueError):
+        store.set_starred(outsider, True)

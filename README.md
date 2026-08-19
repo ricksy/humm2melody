@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (203 tests, no microphone required). But treat it
+> It works, and it is tested (216 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
@@ -64,6 +64,7 @@ or the level meter stays flat, enable it under
 | `space` or the button | Start / stop recording |
 | `p` | Play the detected melody back as tones |
 | `enter` | Load the run highlighted in the sidebar |
+| `s` | Star that run as a favourite |
 | `r` | Rename that run |
 | `d` | Delete that run (asks first) |
 | `[` / `]` | Pitch sensitivity − / + — re-transcribes instantly |
@@ -105,6 +106,11 @@ octave slip or a dropped note is usually obvious.
 `playback.wav` is rendered when the run is saved rather than captured from the
 speaker, so it is present even if you never pressed play. Rendering is
 deterministic, so it is byte-for-byte the audio you would have heard.
+
+Press `s` to star a run. Starred runs show a ★ in the sidebar, and deleting one
+says so in the confirmation. The mark lives in that run's own `notes.json`
+rather than in a central index, so a run directory stays self-describing: copy
+it somewhere else and it is still starred, delete it and nothing dangles.
 
 Runs are named by timestamp. Renaming one keeps the timestamp prefix and appends
 a slug (`2026-08-19_14-32-05__Chorus-idea`), so runs stay chronological and names
