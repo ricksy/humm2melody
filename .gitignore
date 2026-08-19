@@ -1,5 +1,6 @@
-# Saved runs are your data, not source.
+# Saved runs and profiles are your data, not source.
 recordings/
+profiles/
 
 __pycache__/
 *.py[cod]

@@ -10,6 +10,15 @@ that produced them.
 
 ---
 
+## 0. Fill in the Calibrating and Training tabs
+
+Both tabs exist and are placeholders. The app now has profiles, so there is
+somewhere to put what calibration learns — `Profile.calibration` is defined and
+persisted, with every field currently `None`. Items 1 and 2 are the content for
+those two tabs.
+
+---
+
 ## 1. Per-user vocal calibration
 
 **What.** Ask the user to sing a short scale, learn their voice, and set the
@@ -38,9 +47,13 @@ because one user kept pushing it to 8–9.
 expected answer. A calibration run is largely: capture a known scale, run the
 existing diagnosis, persist the result.
 
-**Design questions.** Where does a profile live (a `profile.json` beside
-`recordings/`?). One profile or several. Whether dials show "your default" vs
-the global one. What happens when a new recording disagrees with the profile.
+**Already answered.** Profiles exist: `profiles/<name>.json`, chosen at startup,
+holding dial positions and an empty `Calibration` waiting to be filled. Runs
+record which profile made them.
+
+**Still open.** Whether dials should show "your default" versus the global one.
+What happens when a new recording disagrees with the stored profile. Whether
+calibration should re-run automatically when it goes stale.
 
 ---
 
@@ -110,7 +123,43 @@ already exists.
 
 ---
 
-## 5. Export
+## 5. Compressed audio storage
+
+**Asked for:** save audio as MP3 instead of WAV.
+
+**Recommendation: yes for sharing, no for the stored master — and FLAC, not
+MP3, if the goal is disk space.** The reasoning, since it is not obvious:
+
+`hum.wav` is not just a recording, it is the analysis master. It exists so a
+run can be re-analysed later at different thresholds, and `analyze` and the
+dials both depend on that. MP3 is lossy in exactly the places that matter here:
+
+- it smears transients, and transients are now load-bearing — onset detection
+  is what separates repeated notes for the pause dial
+- it alters low-frequency phase, and a low hum sits at 100–200 Hz where the
+  encoder has least headroom
+- re-analysis would then be measuring the encoder as much as the voice
+
+Three options, in order of preference:
+
+| Option | Size | Analysis | Cost |
+| --- | --- | --- | --- |
+| **FLAC master** | ~50–60% of WAV | lossless, identical results | needs `soundfile`/libsndfile |
+| **WAV master + MP3 export** | unchanged on disk | untouched | an encoder for the export only |
+| **MP3 master** | ~10% of WAV | degraded, subtly | cheapest disk, worst fidelity |
+
+For context on the actual numbers: `hum.wav` is mono 16-bit at 22.05 kHz, about
+44 KB per second — roughly 2.6 MB per minute of humming. Twenty-five runs so
+far come to a few tens of megabytes. This is a real but not urgent problem.
+
+**Suggested shape.** Keep a lossless master (switch it to FLAC if size matters),
+and add an explicit "export this run as MP3" action for sharing, where lossy is
+exactly right. `playback.wav` is a different case — it is regenerable from
+`notes.json`, so it could be dropped entirely rather than compressed.
+
+---
+
+## 6. Export
 
 No MIDI or MusicXML output. `notes.json` has everything required — MIDI number,
 start, end, duration — so an export is a small, self-contained piece of work.
@@ -118,7 +167,7 @@ MIDI first; it is what would actually get used.
 
 ---
 
-## 6. Key detection and transposition
+## 7. Key detection and transposition
 
 The app reports absolute pitch. Someone humming "do re mi" in a comfortable key
 gets a correct transcription that does not look like what they expected.
@@ -129,7 +178,7 @@ Would show: detected key, and an option to transpose to C or to a chosen key.
 
 ---
 
-## 7. Smaller items
+## 8. Smaller items
 
 - **Starred-first sorting, or a favourites filter.** Deliberately not done: the
   list stays newest-first so a fresh recording never appears below older

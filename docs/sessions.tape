@@ -27,10 +27,14 @@ Enter
 Sleep 500ms
 Show
 
-Type "uv run humm2melody --demo --output /tmp/h2m-sessions"
+Type "uv run humm2melody --demo --output /tmp/h2m-sessions --profiles /tmp/h2m-profiles"
 Sleep 700ms
 Enter
-Sleep 3s
+Sleep 2500ms
+
+# The startup screen asks who is humming; continue as guest.
+Type "g"
+Sleep 1500ms
 
 # Record a new run. It is saved automatically and lands at the top.
 Space

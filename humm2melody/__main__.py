@@ -102,6 +102,23 @@ def main(argv: list[str] | None = None) -> int:
         help="do not record runs to disk",
     )
     parser.add_argument(
+        "--profiles",
+        default=None,
+        metavar="DIR",
+        help="where user profiles live (default: profiles/)",
+    )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        metavar="NAME",
+        help="use this profile and skip the startup chooser",
+    )
+    parser.add_argument(
+        "--guest",
+        action="store_true",
+        help="start as guest and skip the startup chooser",
+    )
+    parser.add_argument(
         "--demo",
         action="store_true",
         help="replay a synthetic hum instead of using the microphone",
@@ -119,13 +136,29 @@ def main(argv: list[str] | None = None) -> int:
     if isinstance(device, str) and device.isdigit():
         device = int(device)
 
+    from .profiles import DEFAULT_PROFILE_DIR, ProfileStore, guest
     from .tui import run
+
+    profile_dir = args.profiles or DEFAULT_PROFILE_DIR
+    chosen = None
+    if args.guest:
+        chosen = guest()
+    elif args.profile:
+        store = ProfileStore(profile_dir)
+        chosen = next(
+            (p for p in store.list() if p.name.casefold() == args.profile.casefold()),
+            None,
+        )
+        if chosen is None:
+            parser.error(f"no profile called {args.profile!r}")
 
     run(
         device=device,
         output_dir=args.output,
         save=not args.no_save,
         demo=args.demo,
+        profile_dir=profile_dir,
+        profile=chosen,
     )
     return 0
 

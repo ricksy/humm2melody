@@ -3,7 +3,7 @@
 from .pitch import PitchFrame, detect_pitch, hz_to_note, midi_to_name
 from .segment import Note, segment_notes
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "Note",

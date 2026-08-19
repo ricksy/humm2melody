@@ -22,12 +22,39 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (228 tests, no microphone required). But treat it
+> It works, and it is tested (266 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
 > a laptop microphone. Do not put it anywhere that matters without reading it
 > yourself.
+
+## Profiles and tabs
+
+The app opens by asking who is humming. Pick an existing profile, create one,
+or continue as **Guest** — a guest session works fully but remembers nothing.
+
+A profile stores the dial positions you have settled on, and is where
+calibration will record what it learns about your voice. Each profile is a
+single JSON file under `profiles/`, so one can be copied, edited by hand or
+deleted without touching anything else. Deleting a profile keeps its
+recordings. Press `u` to switch profile at any time.
+
+```bash
+uv run humm2melody --guest              # skip the chooser
+uv run humm2melody --profile Ahmed      # use a profile directly
+uv run humm2melody --profiles ~/voices  # keep profiles somewhere else
+```
+
+The interface has three tabs:
+
+| Tab | What it does |
+| --- | --- |
+| **Recording** | everything described below — hum, transcribe, play back, keep runs |
+| **Calibrating** | placeholder: learn your voice once and set the dials from it |
+| **Training** | placeholder: help your voice get steadier |
+
+The two placeholders explain what they are for. See `docs/ROADMAP.md`.
 
 ## Requirements
 
@@ -72,6 +99,7 @@ or the level meter stays flat, enable it under
 | `m` | Cycle playback: tones / your hum / both |
 | `-` / `=` | Overlay mix: more hum / more tones |
 | `c` | Clear the display (saved runs are untouched) |
+| `u` | Switch profile |
 | `q` | Quit |
 
 Use `↑`/`↓` in the **Recordings** sidebar to pick a run.

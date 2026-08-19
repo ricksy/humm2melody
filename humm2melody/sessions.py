@@ -104,6 +104,7 @@ class Session:
     duration: float = 0.0
     sample_rate: int = 0
     starred: bool = False
+    profile: str = ""  # who recorded it; empty for guest
 
     @property
     def display_name(self) -> str:
@@ -157,6 +158,7 @@ class SessionStore:
         frames: list[PitchFrame],
         notes: list[Note],
         timestamp: datetime | None = None,
+        profile: str = "",
     ) -> Session:
         """Write one run to disk and return it.
 
@@ -190,6 +192,7 @@ class SessionStore:
             path=path,
             timestamp=timestamp,
             label="",
+            profile=profile,
             notes=list(notes),
             duration=duration,
             sample_rate=sample_rate,
@@ -203,6 +206,7 @@ class SessionStore:
             "timestamp": session.timestamp.isoformat(timespec="seconds"),
             "label": session.label,
             "starred": session.starred,
+            "profile": session.profile,
             "duration": round(session.duration, 4),
             "sample_rate": session.sample_rate,
             "playback_sample_rate": PLAYBACK_RATE,
@@ -262,6 +266,7 @@ class SessionStore:
             timestamp=timestamp,
             label=str(data.get("label", "")),
             starred=bool(data.get("starred", False)),
+            profile=str(data.get("profile", "")),
             notes=notes,
             duration=float(data.get("duration", 0.0)),
             sample_rate=int(data.get("sample_rate", 0)),

@@ -12,10 +12,24 @@ from pathlib import Path
 import numpy as np
 from humm2melody.audio import AudioError, LiveReading
 from humm2melody.pitch import PitchFrame, midi_to_hz
+from humm2melody.profiles import Profile, ProfileStore, guest
 from humm2melody.segment import Note
 from humm2melody.sessions import HUM_WAV, MANIFEST, PITCH_CSV, PLAYBACK_WAV
-from humm2melody.tui import Humm2MelodyApp, MelodySequence, PianoRoll
-from textual.widgets import Button, Input, Label, ListView, Static
+from humm2melody.tui import (
+    Humm2MelodyApp,
+    MelodySequence,
+    PianoRoll,
+    ProfileScreen,
+)
+from textual.widgets import (
+    Button,
+    Input,
+    Label,
+    ListView,
+    Static,
+    TabbedContent,
+    TabPane,
+)
 
 SR = 22050
 
@@ -86,8 +100,14 @@ class FakePlayer:
         self.position = 0.0
 
 
-def make_app(tmp_path: Path, save: bool = True, **kwargs) -> Humm2MelodyApp:
-    app = Humm2MelodyApp(output_dir=tmp_path, save=save)
+def make_app(tmp_path: Path, save: bool = True, profile=None, **kwargs):
+    """An app that skips the profile chooser, so key presses reach the UI."""
+    app = Humm2MelodyApp(
+        output_dir=tmp_path,
+        save=save,
+        profile_dir=tmp_path / "profiles",
+        profile=profile or guest(),
+    )
     app.recorder = FakeRecorder(**kwargs)
     app.player = FakePlayer()
     return app
@@ -777,3 +797,180 @@ async def test_overlay_uses_the_chosen_balance(tmp_path: Path):
         assert quiet is not None and loud is not None
         assert not np.allclose(quiet[: min(quiet.size, loud.size)],
                                loud[: min(quiet.size, loud.size)])
+
+
+# -- tabs ------------------------------------------------------------------
+
+
+async def test_the_ui_lives_in_three_tabs(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test():
+        panes = [p.id for p in app.query(TabPane)]
+        assert panes == ["tab-record", "tab-calibrate", "tab-train"]
+
+
+async def test_recording_is_the_active_tab_on_startup(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test():
+        assert app.query_one(TabbedContent).active == "tab-record"
+
+
+async def test_the_recording_tab_holds_the_existing_ui(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        pane = app.query_one("#tab-record", TabPane)
+        for selector in ("#roll", "#sequence", "#runs", "#sensitivity", "#toggle"):
+            assert pane.query(selector)
+
+
+async def test_the_placeholder_tabs_explain_themselves(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test():
+        calibrate = str(app.query_one("#calibrate-body", Static).content)
+        train = str(app.query_one("#train-body", Static).content)
+        assert "Calibrating" in calibrate and "Not built yet" in calibrate
+        assert "Training" in train and "Not built yet" in train
+
+
+# -- profiles --------------------------------------------------------------
+
+
+async def test_the_chooser_opens_when_no_profile_is_given(tmp_path: Path):
+    app = Humm2MelodyApp(
+        output_dir=tmp_path, save=False, profile_dir=tmp_path / "profiles"
+    )
+    app.recorder = FakeRecorder()
+    app.player = FakePlayer()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, ProfileScreen)
+
+
+async def test_guest_can_be_chosen_from_the_chooser(tmp_path: Path):
+    app = Humm2MelodyApp(
+        output_dir=tmp_path, save=False, profile_dir=tmp_path / "profiles"
+    )
+    app.recorder = FakeRecorder()
+    app.player = FakePlayer()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("g")
+        await pilot.pause()
+        assert not isinstance(app.screen, ProfileScreen)
+        assert app.profile.is_guest is True
+
+
+async def test_a_profile_supplies_its_dial_settings(tmp_path: Path):
+    store = ProfileStore(tmp_path / "profiles")
+    profile = store.create("Ahmed")
+    profile.pitch_sensitivity, profile.pause_sensitivity, profile.mix = 8, 3, 7
+    store.save(profile)
+
+    app = make_app(tmp_path, profile=profile)
+    async with app.run_test():
+        assert app.sensitivity == 8
+        assert app.pause_sensitivity == 3
+        assert app.mix == 7
+
+
+async def test_dial_changes_are_remembered_for_a_profile(tmp_path: Path):
+    store = ProfileStore(tmp_path / "profiles")
+    profile = store.create("Ahmed")
+
+    app = make_app(tmp_path, profile=profile)
+    async with app.run_test() as pilot:
+        await pilot.press("right_square_bracket")
+        await pilot.press("comma")
+        await pilot.press("minus")
+        await pilot.pause()
+
+    reloaded = store.list()[0]
+    assert reloaded.pitch_sensitivity == 6
+    assert reloaded.pause_sensitivity == 4
+    assert reloaded.mix == 4
+
+
+async def test_guest_settings_are_not_remembered(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("right_square_bracket")
+        await pilot.pause()
+        assert app.sensitivity == 6
+    assert not (tmp_path / "profiles").exists() or list(
+        (tmp_path / "profiles").glob("*.json")
+    ) == []
+
+
+async def test_the_profile_name_shows_in_the_subtitle(tmp_path: Path):
+    store = ProfileStore(tmp_path / "profiles")
+    app = make_app(tmp_path, profile=store.create("Ahmed"))
+    async with app.run_test():
+        assert "Ahmed" in app.sub_title
+
+
+async def test_u_reopens_the_chooser(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("u")
+        await pilot.pause()
+        assert isinstance(app.screen, ProfileScreen)
+        await pilot.press("escape")
+
+
+async def test_a_run_records_which_profile_made_it(tmp_path: Path):
+    store = ProfileStore(tmp_path / "profiles")
+    app = make_app(tmp_path, profile=store.create("Ahmed"))
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        assert app.sessions[0].profile == "Ahmed"
+
+
+async def test_a_guest_run_records_no_profile(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        assert app.sessions[0].profile == ""
+
+
+async def test_the_chooser_says_so_when_there_are_no_profiles(tmp_path: Path):
+    app = Humm2MelodyApp(
+        output_dir=tmp_path, save=False, profile_dir=tmp_path / "profiles"
+    )
+    app.recorder = FakeRecorder()
+    app.player = FakePlayer()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        hint = str(app.screen.query_one("#profile-hint", Static).content)
+        assert "No profiles yet" in hint
+        assert "delete" not in hint  # nothing to delete, so do not offer it
+        await pilot.press("g")
+
+
+async def test_the_chooser_offers_every_action_once_a_profile_exists(tmp_path: Path):
+    ProfileStore(tmp_path / "profiles").create("Ahmed")
+    app = Humm2MelodyApp(
+        output_dir=tmp_path, save=False, profile_dir=tmp_path / "profiles"
+    )
+    app.recorder = FakeRecorder()
+    app.player = FakePlayer()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        hint = str(app.screen.query_one("#profile-hint", Static).content)
+        assert "use profile" in hint and "delete" in hint
+        await pilot.press("g")
+
+
+async def test_a_profile_can_be_selected_from_the_chooser(tmp_path: Path):
+    ProfileStore(tmp_path / "profiles").create("Ahmed")
+    app = Humm2MelodyApp(
+        output_dir=tmp_path, save=False, profile_dir=tmp_path / "profiles"
+    )
+    app.recorder = FakeRecorder()
+    app.player = FakePlayer()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.profile.name == "Ahmed"
+        assert app.profile.is_guest is False

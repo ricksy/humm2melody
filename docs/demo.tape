@@ -18,10 +18,14 @@ Set Padding 14
 Set Framerate 12
 Set TypingSpeed 45ms
 
-Type "uv run humm2melody --demo --output /tmp/h2m-demo"
+Type "uv run humm2melody --demo --output /tmp/h2m-demo --profiles /tmp/h2m-profiles"
 Sleep 700ms
 Enter
-Sleep 3s
+Sleep 2500ms
+
+# The startup screen asks who is humming; continue as guest.
+Type "g"
+Sleep 1500ms
 
 # Start humming. The melody is ~4.4s long.
 Space

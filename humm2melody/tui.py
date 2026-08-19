@@ -11,12 +11,23 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView
-from textual.widgets import Static
+from textual.widgets import (
+    Button,
+    Footer,
+    Header,
+    Input,
+    Label,
+    ListItem,
+    ListView,
+    Static,
+    TabbedContent,
+    TabPane,
+)
 
 from .audio import AudioError, Recorder
 from .pitch import NOTE_NAMES
 from .playback import MIX_DEFAULT, MIX_MAX, MIX_MIN, Player, mix_hum_with_tones
+from .profiles import DEFAULT_PROFILE_DIR, Profile, ProfileStore, guest
 from .pitch import PitchFrame
 from .segment import (
     PAUSE_DEFAULT,
@@ -355,7 +366,7 @@ def _detail_table(notes: list[Note]) -> Table:
 
 
 DIALOG_CSS = """
-    RenameScreen, ConfirmScreen { align: center middle; }
+    NameScreen, ConfirmScreen, ProfileScreen { align: center middle; }
     #dialog {
         width: 60;
         height: auto;
@@ -370,27 +381,32 @@ DIALOG_CSS = """
 """
 
 
-class RenameScreen(ModalScreen[str | None]):
-    """Ask for a new label for a run."""
+class NameScreen(ModalScreen[str | None]):
+    """Ask for a name. Used for both run labels and profile names."""
 
     CSS = DIALOG_CSS
     BINDINGS = [("escape", "cancel", "Cancel")]
 
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        title: str,
+        value: str = "",
+        placeholder: str = "",
+        confirm_label: str = "Save",
+    ) -> None:
         super().__init__()
-        self.session = session
+        self.title_text = title
+        self.value = value
+        self.placeholder = placeholder
+        self.confirm_label = confirm_label
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
-            yield Label(f"Rename “{self.session.display_name}”")
-            yield Input(
-                value=self.session.label,
-                placeholder="leave empty to go back to the timestamp",
-                id="label",
-            )
+            yield Label(self.title_text)
+            yield Input(value=self.value, placeholder=self.placeholder, id="label")
             with Horizontal():
                 yield Button("Cancel", id="cancel")
-                yield Button("Rename", variant="primary", id="ok")
+                yield Button(self.confirm_label, variant="primary", id="ok")
 
     def on_mount(self) -> None:
         self.query_one("#label", Input).focus()
@@ -446,6 +462,181 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+def _placeholder_calibrating() -> Text:
+    text = Text()
+    text.append("\n  Calibrating\n\n", style="bold")
+    text.append(
+        "  Not built yet. The plan is to learn your voice once and set the\n"
+        "  dials from that, instead of from thresholds hand-tuned against\n"
+        "  somebody else.\n\n",
+        style="dim",
+    )
+    text.append("  It would measure:\n\n", style="dim")
+    for line in (
+        "your comfortable range, low and high",
+        "how far you usually sit off concert pitch",
+        "how much your pitch drifts while holding a note",
+        "how much you slide between notes",
+        "how cleanly you separate repeated notes",
+    ):
+        text.append(f"    · {line}\n", style="dim")
+    text.append(
+        "\n  Most of these are already computed by the analyze command; what\n"
+        "  is missing is capturing a known scale and saving the result to\n"
+        "  your profile. See docs/ROADMAP.md.\n",
+        style="dim",
+    )
+    return text
+
+
+def _placeholder_training() -> Text:
+    text = Text()
+    text.append("\n  Training\n\n", style="bold")
+    text.append(
+        "  Not built yet. The plan is the other half of the problem: rather\n"
+        "  than making the app better at understanding an imperfect voice,\n"
+        "  help the voice get steadier.\n\n",
+        style="dim",
+    )
+    text.append(
+        "  The live readout already produces pitch, note and cents about 43\n"
+        "  times a second, so the machinery exists. What it needs is a target\n"
+        "  to compare against and a way to score you.\n\n",
+        style="dim",
+    )
+    text.append(
+        "  First exercise, once built: show a target note, play it, and ask\n"
+        "  you to match and hold it inside a band for a second.\n",
+        style="dim",
+    )
+    return text
+
+
+class ProfileScreen(ModalScreen[Profile]):
+    """Asks who is humming, before anything else happens."""
+
+    CSS = DIALOG_CSS + """
+    ProfileScreen #dialog { width: 68; }
+    ProfileScreen ListView {
+        height: auto;
+        min-height: 3;
+        max-height: 12;
+        background: transparent;
+        border: none;
+    }
+    ProfileScreen #profile-hint { color: $text-muted; margin: 1 0; }
+    """
+    BINDINGS = [
+        ("g", "use_guest", "Guest"),
+        ("n", "new_profile", "New"),
+        ("d", "delete_profile", "Delete"),
+        ("escape", "use_guest", "Guest"),
+    ]
+
+    def __init__(self, store: ProfileStore) -> None:
+        super().__init__()
+        self.store = store
+        self.profiles: list[Profile] = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label(Text("Who is humming?", style="bold"))
+            yield ListView(id="profiles")
+            yield Static(id="profile-hint")
+            with Horizontal():
+                yield Button("Continue as guest", id="guest")
+                yield Button("New profile", variant="primary", id="new")
+
+    def on_mount(self) -> None:
+        self.refresh_profiles()
+        self.query_one("#profiles", ListView).focus()
+
+    def _show_hint(self) -> None:
+        """Only advertise the keys that currently do something."""
+        if self.profiles:
+            hint = "enter  use profile      n  new      d  delete      g  guest"
+        else:
+            hint = "No profiles yet.      n  new profile      g  continue as guest"
+        self.query_one("#profile-hint", Static).update(Text(hint, style="dim"))
+
+    def refresh_profiles(self, select: str | None = None) -> None:
+        self.profiles = self.store.list()
+        listing = self.query_one("#profiles", ListView)
+        listing.clear()
+        for profile in self.profiles:
+            label = Text(profile.name, style="bold")
+            label.append(f"\n{profile.summary}", style="dim")
+            listing.append(ListItem(Label(label)))
+        if self.profiles:
+            index = 0
+            if select is not None:
+                index = next(
+                    (i for i, p in enumerate(self.profiles) if p.name == select), 0
+                )
+            listing.index = index
+        self._show_hint()
+
+    @property
+    def selected(self) -> Profile | None:
+        listing = self.query_one("#profiles", ListView)
+        if listing.index is None or not (0 <= listing.index < len(self.profiles)):
+            return None
+        return self.profiles[listing.index]
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if self.selected is not None:
+            self.dismiss(self.selected)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "guest":
+            self.action_use_guest()
+        elif event.button.id == "new":
+            self.action_new_profile()
+
+    def action_use_guest(self) -> None:
+        self.dismiss(guest())
+
+    def action_new_profile(self) -> None:
+        def create(name: str | None) -> None:
+            if not name:
+                return
+            try:
+                profile = self.store.create(name)
+            except (OSError, ValueError) as exc:
+                self.query_one("#profile-hint", Static).update(
+                    Text(str(exc), style="bold red")
+                )
+                return
+            self.dismiss(profile)
+
+        self.app.push_screen(NameScreen("New profile", ""), create)
+
+    def action_delete_profile(self) -> None:
+        profile = self.selected
+        if profile is None:
+            return
+
+        def apply(confirmed: bool | None) -> None:
+            if not confirmed:
+                return
+            try:
+                self.store.delete(profile)
+            except (OSError, ValueError) as exc:
+                self.query_one("#profile-hint", Static).update(
+                    Text(str(exc), style="bold red")
+                )
+                return
+            self.refresh_profiles()
+
+        self.app.push_screen(
+            ConfirmScreen(
+                f"Delete the profile “{profile.name}”?\n"
+                "Recordings it produced are kept."
+            ),
+            apply,
+        )
+
+
 class Humm2MelodyApp(App):
     """Hum a melody, get the notes to play."""
 
@@ -490,6 +681,8 @@ class Humm2MelodyApp(App):
         border-left: solid $primary 30%;
         padding: 0 1;
     }
+    TabPane { padding: 0 1; }
+    #calibrate-body, #train-body { height: auto; }
     #sidebar-title { height: 1; text-style: bold; }
     #sidebar-path { height: auto; margin-bottom: 1; }
     #runs { height: 1fr; background: transparent; border: none; }
@@ -501,6 +694,7 @@ class Humm2MelodyApp(App):
         ("space", "toggle", "Start / Stop"),
         ("p", "play", "Play back"),
         ("s", "star_run", "Star run"),
+        ("u", "switch_profile", "Profile"),
         ("r", "rename_run", "Rename run"),
         ("d", "delete_run", "Delete run"),
         ("left_square_bracket", "less_sensitive", "Pitch −"),
@@ -520,8 +714,14 @@ class Humm2MelodyApp(App):
         output_dir: Path | str = DEFAULT_OUTPUT_DIR,
         save: bool = True,
         demo: bool = False,
+        profile_dir: Path | str = DEFAULT_PROFILE_DIR,
+        profile: Profile | None = None,
     ) -> None:
         super().__init__()
+        self.profiles = ProfileStore(profile_dir)
+        # None means "ask on startup"; a profile means use it and do not ask.
+        self.profile = profile or guest()
+        self._ask_for_profile = profile is None
         if demo:
             from .demo import DemoRecorder
 
@@ -545,29 +745,41 @@ class Humm2MelodyApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Vertical(id="live"):
-            yield NoteReadout(id="readout")
-            yield LevelMeter(id="meter")
-            yield Static("Press Start (or space) and hum your melody.", id="hint")
-        with Horizontal(id="controls"):
-            yield ActionButton("▶  Start humming", variant="success", id="toggle")
-            yield ActionButton(
-                "♪  Play back", variant="primary", id="play", disabled=True
-            )
-            yield ActionButton("◑  Tones only", id="compare")
-        yield SensitivityDial(id="sensitivity")
-        yield PauseDial(id="pause")
-        yield MixDial(id="mix")
-        with Horizontal(id="main"):
-            with VerticalScroll(id="results"):
-                yield PianoRoll(id="roll")
-                yield MelodySequence(id="sequence")
-                yield Static(id="detail")
-            with Vertical(id="sidebar"):
-                yield Static("Recordings", id="sidebar-title")
-                yield Static(id="sidebar-path")
-                yield ListView(id="runs")
-                yield Static(id="run-hint")
+        with TabbedContent(initial="tab-record"):
+            with TabPane("Recording", id="tab-record"):
+                with Vertical(id="live"):
+                    yield NoteReadout(id="readout")
+                    yield LevelMeter(id="meter")
+                    yield Static(
+                        "Press Start (or space) and hum your melody.", id="hint"
+                    )
+                with Horizontal(id="controls"):
+                    yield ActionButton(
+                        "▶  Start humming", variant="success", id="toggle"
+                    )
+                    yield ActionButton(
+                        "♪  Play back", variant="primary", id="play", disabled=True
+                    )
+                    yield ActionButton("◑  Tones only", id="compare")
+                yield SensitivityDial(id="sensitivity")
+                yield PauseDial(id="pause")
+                yield MixDial(id="mix")
+                with Horizontal(id="main"):
+                    with VerticalScroll(id="results"):
+                        yield PianoRoll(id="roll")
+                        yield MelodySequence(id="sequence")
+                        yield Static(id="detail")
+                    with Vertical(id="sidebar"):
+                        yield Static("Recordings", id="sidebar-title")
+                        yield Static(id="sidebar-path")
+                        yield ListView(id="runs")
+                        yield Static(id="run-hint")
+
+            with TabPane("Calibrating", id="tab-calibrate"):
+                yield Static(_placeholder_calibrating(), id="calibrate-body")
+
+            with TabPane("Training", id="tab-train"):
+                yield Static(_placeholder_training(), id="train-body")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -576,6 +788,7 @@ class Humm2MelodyApp(App):
         self.query_one("#sensitivity", SensitivityDial).show(self.sensitivity)
         self.query_one("#pause", PauseDial).show(self.pause_sensitivity)
         self.query_one("#mix", MixDial).show(self.mix)
+        self._apply_profile(self.profile)
         self.query_one("#compare", Button).label = self._source_label()
         # One key per line: the sidebar is too narrow for a single run-on line,
         # which wraps mid-word.
@@ -596,6 +809,8 @@ class Humm2MelodyApp(App):
         # leave the sidebar's enter/up/down keys dead. ListView only binds
         # those three, so focusing it does not shadow any app-level key.
         self.query_one("#runs", ListView).focus()
+        if self._ask_for_profile:
+            self.action_switch_profile()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "toggle":
@@ -692,6 +907,7 @@ class Humm2MelodyApp(App):
                 sample_rate=self.recorder.sample_rate,
                 frames=frames,
                 notes=self.notes,
+                profile="" if self.profile.is_guest else self.profile.name,
             )
         except OSError as exc:
             self._set_hint(Text(f"Could not save this run: {exc}", style="bold red"))
@@ -841,6 +1057,54 @@ class Humm2MelodyApp(App):
         else:
             self._set_hint(f"Loaded {session.path.name} · this run has no notes")
 
+    # -- profiles ----------------------------------------------------------
+
+    def action_switch_profile(self) -> None:
+        """Ask who is humming, and adopt their saved settings."""
+        if self.recorder.running:
+            return
+        self._stop_playback()
+        self.push_screen(ProfileScreen(self.profiles), self._adopt_profile)
+
+    def _adopt_profile(self, profile: Profile | None) -> None:
+        if profile is None:
+            return
+        self._apply_profile(profile)
+        if profile.is_guest:
+            self._set_hint("Continuing as guest — settings will not be saved.")
+        else:
+            self._set_hint(f"Settings loaded for “{profile.name}”.")
+
+    def _apply_profile(self, profile: Profile) -> None:
+        self.profile = profile
+        self.sensitivity = profile.pitch_sensitivity
+        self.pause_sensitivity = profile.pause_sensitivity
+        self.mix = profile.mix
+        self.sub_title = f"{profile.name} · hum a melody, get the keyboard notes"
+
+        for selector, kind, value in (
+            ("#sensitivity", SensitivityDial, self.sensitivity),
+            ("#pause", PauseDial, self.pause_sensitivity),
+            ("#mix", MixDial, self.mix),
+        ):
+            dial = self._find(selector, kind)
+            if dial is not None:
+                dial.show(value)
+        if self.frames:
+            self._resegment()
+
+    def _remember_dials(self) -> None:
+        """Persist dial positions to the profile. Guests are not remembered."""
+        if self.profile.is_guest:
+            return
+        self.profile.pitch_sensitivity = self.sensitivity
+        self.profile.pause_sensitivity = self.pause_sensitivity
+        self.profile.mix = self.mix
+        try:
+            self.profiles.save(self.profile)
+        except OSError:
+            pass
+
     def action_star_run(self) -> None:
         """Toggle the favourite mark on the highlighted run."""
         session = self.selected_session
@@ -871,7 +1135,15 @@ class Humm2MelodyApp(App):
             self.refresh_sessions(select=session.path)
             self._set_hint(f"Renamed to “{session.display_name}”.")
 
-        self.push_screen(RenameScreen(session), apply)
+        self.push_screen(
+            NameScreen(
+                f"Rename “{session.display_name}”",
+                session.label,
+                "leave empty to go back to the timestamp",
+                confirm_label="Rename",
+            ),
+            apply,
+        )
 
     def action_delete_run(self) -> None:
         session = self.selected_session
@@ -936,6 +1208,7 @@ class Humm2MelodyApp(App):
         if (pitch, pause) == (self.sensitivity, self.pause_sensitivity):
             return
         self.sensitivity, self.pause_sensitivity = pitch, pause
+        self._remember_dials()
 
         dial = self._find("#sensitivity", SensitivityDial)
         if dial is not None:
@@ -982,6 +1255,7 @@ class Humm2MelodyApp(App):
         if level == self.mix:
             return
         self.mix = level
+        self._remember_dials()
         dial = self._find("#mix", MixDial)
         if dial is not None:
             dial.show(level)
@@ -1044,7 +1318,14 @@ def run(
     output_dir: Path | str = DEFAULT_OUTPUT_DIR,
     save: bool = True,
     demo: bool = False,
+    profile_dir: Path | str = DEFAULT_PROFILE_DIR,
+    profile: Profile | None = None,
 ) -> None:
     Humm2MelodyApp(
-        device=device, output_dir=output_dir, save=save, demo=demo
+        device=device,
+        output_dir=output_dir,
+        save=save,
+        demo=demo,
+        profile_dir=profile_dir,
+        profile=profile,
     ).run()
