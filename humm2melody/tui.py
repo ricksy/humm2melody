@@ -28,7 +28,8 @@ from textual.widgets import (
 from .audio import AudioError, Recorder
 from .calibration import STEPS as CALIBRATION_STEPS
 from .calibration import GLOBAL_FMAX, GLOBAL_FMIN, calibrate, voice_bounds
-from .pitch import NOTE_NAMES
+from .pitch import NOTE_NAMES, midi_to_hz
+from .naming import SCHEMES, get_scheme, next_scheme, spell
 from .playback import MIX_DEFAULT, MIX_MAX, MIX_MIN, Player, mix_hum_with_tones
 from .profiles import DEFAULT_PROFILE_DIR, Profile, ProfileStore, guest
 from .pitch import PitchFrame
@@ -59,6 +60,7 @@ MAX_ROLL_ROWS = 32
 ACCENT = "#7dd3fc"
 ACCENT_SHARP = "#818cf8"
 HIGHLIGHT = "#fbbf24"
+SELECTED = "#f472b6"
 
 
 def _is_black_key(midi: int) -> bool:
@@ -149,6 +151,22 @@ class MixDial(Dial):
         )
 
 
+class NotationRow(Static):
+    """Which tradition note names are written in."""
+
+    def show(self, key: str) -> None:
+        scheme = get_scheme(key)
+        text = Text(f"{'Notation':<11}", style="bold")
+        text.append("n    ", style="dim")
+        for item in SCHEMES:
+            if item.key == scheme.key:
+                text.append(f" {item.label} ", style=f"bold black on {HIGHLIGHT}")
+            else:
+                text.append(f" {item.label} ", style="grey42")
+        text.append(f"   {scheme.note}", style="dim")
+        self.update(text)
+
+
 class LevelMeter(Static):
     """Input level as a block-character bar."""
 
@@ -192,16 +210,63 @@ class NoteReadout(Static):
 
 
 class PianoRoll(Static):
-    """Notes laid out as pitch (rows) against time (columns)."""
+    """Notes laid out as pitch (rows) against time (columns).
+
+    In edit mode this widget takes focus, so the editing keys belong to it
+    rather than to the app. That is what lets `,` `.` `-` `=` mean nudge and
+    resize while editing and keep meaning the pause and mix dials otherwise:
+    a focused widget is offered keys before any app binding, so the two sets
+    cannot collide.
+    """
+
+    can_focus = True
+
+    BINDINGS = [
+        ("left", "select(-1)", "Previous note"),
+        ("right", "select(1)", "Next note"),
+        ("up", "transpose(1)", "Higher"),
+        ("down", "transpose(-1)", "Lower"),
+        ("shift+up", "transpose(12)", "Octave up"),
+        ("shift+down", "transpose(-12)", "Octave down"),
+        ("comma", "shift(-1)", "Earlier"),
+        ("full_stop", "shift(1)", "Later"),
+        ("minus", "resize(-1)", "Shorter"),
+        ("equals_sign", "resize(1)", "Longer"),
+        ("escape", "done", "Done editing"),
+    ]
+
+    def action_select(self, delta: int) -> None:
+        self.app.edit_select(delta)
+
+    def action_transpose(self, delta: int) -> None:
+        self.app.edit_transpose(delta)
+
+    def action_shift(self, direction: int) -> None:
+        self.app.edit_shift(direction)
+
+    def action_resize(self, direction: int) -> None:
+        self.app.edit_resize(direction)
+
+    def action_done(self) -> None:
+        self.app.action_edit_notes()
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._notes: list[Note] = []
+        self._selected: int | None = None
+        self._scheme: str = "english"
         self._playhead: float | None = None
         self._head_col: int | None = None
 
-    def show(self, notes: list[Note]) -> None:
+    def show(
+        self,
+        notes: list[Note],
+        selected: int | None = None,
+        scheme: str = "english",
+    ) -> None:
         self._notes = notes
+        self._selected = selected
+        self._scheme = scheme
         self._playhead = None
         self._head_col = None
         self.refresh_roll()
@@ -243,7 +308,9 @@ class PianoRoll(Static):
             self.update(Text(""))
             return
 
-        label_w = 5
+        lo0 = min(n.midi for n in notes)
+        hi0 = max(n.midi for n in notes)
+        label_w = max(5, max(len(spell(m, self._scheme)) for m in range(lo0, hi0 + 1)) + 1)
         width = max(20, self.size.width - label_w - 2)
 
         head_col = None
@@ -258,17 +325,19 @@ class PianoRoll(Static):
         out = Text()
         for midi in range(hi, lo - 1, -1):
             style = "dim" if _is_black_key(midi) else "bold"
-            out.append(f"{_note_name(midi):>{label_w - 1}} ", style=style)
+            out.append(f"{spell(midi, self._scheme):>{label_w - 1}} ", style=style)
             out.append("│", style="dim")
 
             cells: list[Note | None] = [None] * width
-            for n in notes:
+            chosen = [False] * width
+            for index, n in enumerate(notes):
                 if n.midi != midi:
                     continue
                 start = int(n.start / span * width)
                 end = max(start + 1, math.ceil(n.end / span * width))
                 for c in range(start, min(end, width)):
                     cells[c] = n
+                    chosen[c] = index == self._selected
 
             for col, cell in enumerate(cells):
                 on_head = col == head_col
@@ -277,6 +346,8 @@ class PianoRoll(Static):
                                style=HIGHLIGHT if on_head else "grey30")
                 elif on_head:
                     out.append("█", style=HIGHLIGHT)
+                elif chosen[col]:
+                    out.append("█", style=f"bold {SELECTED}")
                 else:
                     out.append(
                         "█", style=ACCENT_SHARP if _is_black_key(midi) else ACCENT
@@ -316,9 +387,18 @@ class MelodySequence(Static):
         super().__init__(**kwargs)
         self._notes: list[Note] = []
         self._active: int | None = None
+        self._selected: int | None = None
+        self._scheme: str = "english"
 
-    def show(self, notes: list[Note]) -> None:
+    def show(
+        self,
+        notes: list[Note],
+        selected: int | None = None,
+        scheme: str = "english",
+    ) -> None:
         self._notes = notes
+        self._selected = selected
+        self._scheme = scheme
         self._active = None
         self._redraw()
 
@@ -336,14 +416,19 @@ class MelodySequence(Static):
             if i:
                 gap = n.start - self._notes[i - 1].end
                 text.append("  ·  " if gap > 0.25 else "  ", style="dim")
+            name = spell(n.midi, self._scheme)
             if i == self._active:
-                text.append(f" {n.name} ", style=f"bold black on {HIGHLIGHT}")
+                text.append(f" {name} ", style=f"bold black on {HIGHLIGHT}")
+            elif i == self._selected:
+                text.append(f"[{name}]", style=f"bold {SELECTED}")
             else:
-                text.append(n.name, style=f"bold {ACCENT}")
+                text.append(name, style=f"bold {ACCENT}")
         self.update(text)
 
 
-def _detail_table(notes: list[Note]) -> Table:
+def _detail_table(
+    notes: list[Note], selected: int | None = None, scheme: str = "english"
+) -> Table:
     table = Table(expand=False, pad_edge=False, header_style="bold dim")
     table.add_column("#", justify="right", style="dim")
     table.add_column("Note", style=f"bold {ACCENT}")
@@ -353,6 +438,7 @@ def _detail_table(notes: list[Note]) -> Table:
     table.add_column("Tuning", justify="right")
 
     for i, n in enumerate(notes, start=1):
+        chosen = (i - 1) == selected
         cents = n.cents_off
         if abs(cents) < 12:
             tuning = Text("on pitch", style="green")
@@ -360,9 +446,14 @@ def _detail_table(notes: list[Note]) -> Table:
             tuning = Text(
                 f"{'+' if cents > 0 else '−'}{abs(cents):.0f}¢", style="yellow"
             )
+        marker = "▸" if chosen else str(i)
+        name = Text(
+            spell(n.midi, scheme),
+            style=f"bold {SELECTED}" if chosen else f"bold {ACCENT}",
+        )
         table.add_row(
-            str(i),
-            n.name,
+            marker,
+            name,
             f"{n.start:.2f}s",
             f"{n.duration:.2f}s",
             f"{n.freq:.1f}",
@@ -881,6 +972,7 @@ class Humm2MelodyApp(App):
     #sensitivity { height: 1; margin: 1 2 0 2; }
     #pause { height: 1; margin: 0 2 0 2; }
     #mix { height: 1; margin: 0 2 0 2; }
+    #notation { height: 1; margin: 0 2 0 2; }
     #compare { min-width: 26; margin-left: 2; }
 
     #main { height: 1fr; margin: 1 2; }
@@ -926,6 +1018,8 @@ class Humm2MelodyApp(App):
         ("m", "cycle_source", "Compare"),
         ("l", "play_reference", "Hear melody"),
         ("y", "keep_calibration", "Keep calibration"),
+        ("n", "cycle_notation", "Notation"),
+        ("e", "edit_notes", "Edit notes"),
         ("minus", "less_tones", "More hum"),
         ("equals_sign", "more_tones", "More tones"),
         ("c", "clear", "Clear"),
@@ -971,6 +1065,10 @@ class Humm2MelodyApp(App):
         # Startup activates the first tab, which would otherwise be recorded
         # as "the tab you were last on" before the remembered one is restored.
         self._tab_ready = False
+        self.notation = "english"
+        self.editing = False
+        self.selected_note: int | None = None
+        self.current_session: Session | None = None
         self.audio = None
         self.audio_rate = 0
         self.sessions: list[Session] = []
@@ -998,6 +1096,7 @@ class Humm2MelodyApp(App):
                 yield SensitivityDial(id="sensitivity")
                 yield PauseDial(id="pause")
                 yield MixDial(id="mix")
+                yield NotationRow(id="notation")
                 with Horizontal(id="main"):
                     with VerticalScroll(id="results"):
                         yield PianoRoll(id="roll")
@@ -1022,6 +1121,7 @@ class Humm2MelodyApp(App):
         self.query_one("#sensitivity", SensitivityDial).show(self.sensitivity)
         self.query_one("#pause", PauseDial).show(self.pause_sensitivity)
         self.query_one("#mix", MixDial).show(self.mix)
+        self.query_one("#notation", NotationRow).show(self.notation)
         self._apply_profile(self.profile)
         self._refresh_calibration()
         self.query_one("#compare", Button).label = self._source_label()
@@ -1165,6 +1265,7 @@ class Humm2MelodyApp(App):
         except OSError as exc:
             self._set_hint(Text(f"Could not save this run: {exc}", style="bold red"))
             return None
+        self.current_session = session
         self.refresh_sessions(select=session.path)
         return session
 
@@ -1288,6 +1389,9 @@ class Humm2MelodyApp(App):
         if session is None:
             return
         self._stop_playback()
+        self.current_session = session
+        self.editing = False
+        self.selected_note = None
         self.frames = read_pitch_track(session.pitch_track_path)
         self.audio, self.audio_rate = None, 0
         if session.hum_path.is_file():
@@ -1307,6 +1411,113 @@ class Humm2MelodyApp(App):
             self._set_hint(f"Loaded {session.path.name} · p to play it back")
         else:
             self._set_hint(f"Loaded {session.path.name} · this run has no notes")
+
+    # -- editing -----------------------------------------------------------
+
+    NUDGE = 0.05
+    """Seconds a note moves or grows per keypress."""
+
+    MIN_DURATION = 0.05
+
+    def action_edit_notes(self) -> None:
+        """Toggle note editing, which hands the arrow keys to the timeline."""
+        if self._active_tab() != "tab-record" or not self.notes:
+            return
+
+        self.editing = not self.editing
+        roll = self._find("#roll", PianoRoll)
+        if self.editing:
+            if self.selected_note is None:
+                self.selected_note = 0
+            if roll is not None:
+                roll.focus()
+            self._set_hint(
+                "Editing — ← → pick · ↑ ↓ pitch · , . move · - = length · esc done"
+            )
+        else:
+            runs = self._find("#runs", ListView)
+            if runs is not None:
+                runs.focus()
+            self._set_hint("Done editing.")
+        self._show_notes(self.notes)
+
+    def edit_select(self, delta: int) -> None:
+        if not self.editing or not self.notes:
+            return
+        current = self.selected_note or 0
+        self.selected_note = max(0, min(len(self.notes) - 1, current + delta))
+        self._show_notes(self.notes)
+
+    def _replace_selected(self, **changes) -> None:
+        """Rewrite the chosen note. Notes are frozen, so this makes a new one."""
+        index = self.selected_note
+        if index is None or not (0 <= index < len(self.notes)):
+            return
+        note = self.notes[index]
+        fields = {
+            "midi": note.midi,
+            "start": note.start,
+            "end": note.end,
+            "freq": note.freq,
+            "confidence": note.confidence,
+            "pitch": note.pitch,
+            "attack": note.attack,
+        }
+        fields.update(changes)
+        self.notes[index] = Note(**fields)
+        self._show_notes(self.notes)
+        self._save_edited_notes()
+
+    def edit_transpose(self, semitones: int) -> None:
+        if not self.editing:
+            return
+        index = self.selected_note
+        if index is None:
+            return
+        note = self.notes[index]
+        midi = max(0, min(127, note.midi + semitones))
+        # Move the measured pitch with it, so the tuning column keeps reporting
+        # the distance from the *hummed* pitch rather than becoming nonsense.
+        self._replace_selected(
+            midi=midi,
+            pitch=(note.pitch + semitones) if note.pitch else float(midi),
+            freq=midi_to_hz(midi + (note.cents_off / 100.0)),
+        )
+        self._set_hint(f"{spell(midi, self.notation)}")
+
+    def edit_shift(self, direction: int) -> None:
+        """Move a note earlier or later without changing its length."""
+        if not self.editing:
+            return
+        index = self.selected_note
+        if index is None:
+            return
+        note = self.notes[index]
+        delta = self.NUDGE * direction
+        start = max(0.0, note.start + delta)
+        self._replace_selected(start=start, end=start + note.duration)
+
+    def edit_resize(self, direction: int) -> None:
+        """Lengthen or shorten a note, keeping its start where it is."""
+        if not self.editing:
+            return
+        index = self.selected_note
+        if index is None:
+            return
+        note = self.notes[index]
+        end = max(note.start + self.MIN_DURATION, note.end + self.NUDGE * direction)
+        self._replace_selected(end=end)
+
+    def _save_edited_notes(self) -> None:
+        """Write edits back to the run they came from, if there is one."""
+        session = self.current_session
+        if session is None:
+            return
+        try:
+            self.store.update_notes(session, self.notes)
+        except (OSError, ValueError):
+            pass
+        self.refresh_sessions(select=session.path)
 
     # -- calibration -------------------------------------------------------
 
@@ -1489,6 +1700,7 @@ class Humm2MelodyApp(App):
         self.sensitivity = profile.pitch_sensitivity
         self.pause_sensitivity = profile.pause_sensitivity
         self.mix = profile.mix
+        self.notation = profile.notation
         self._apply_calibrated_detection(profile)
         self.sub_title = f"{profile.name} · hum a melody, get the keyboard notes"
 
@@ -1496,6 +1708,7 @@ class Humm2MelodyApp(App):
             ("#sensitivity", SensitivityDial, self.sensitivity),
             ("#pause", PauseDial, self.pause_sensitivity),
             ("#mix", MixDial, self.mix),
+            ("#notation", NotationRow, self.notation),
         ):
             dial = self._find(selector, kind)
             if dial is not None:
@@ -1575,6 +1788,7 @@ class Humm2MelodyApp(App):
         self.profile.pitch_sensitivity = self.sensitivity
         self.profile.pause_sensitivity = self.pause_sensitivity
         self.profile.mix = self.mix
+        self.profile.notation = self.notation
         try:
             self.profiles.save(self.profile)
         except OSError:
@@ -1661,11 +1875,12 @@ class Humm2MelodyApp(App):
         self._set_hint("Press Start (or space) and hum your melody.")
 
     def _show_notes(self, notes: list[Note]) -> None:
-        self.query_one("#roll", PianoRoll).show(notes)
-        self.query_one("#sequence", MelodySequence).show(notes)
+        chosen = self.selected_note if self.editing else None
+        self.query_one("#roll", PianoRoll).show(notes, chosen, self.notation)
+        self.query_one("#sequence", MelodySequence).show(notes, chosen, self.notation)
         self.query_one("#play", Button).disabled = not (notes or self.audio is not None)
         self.query_one("#detail", Static).update(
-            _detail_table(notes) if notes else Text("")
+            _detail_table(notes, chosen, self.notation) if notes else Text("")
         )
 
     def action_less_sensitive(self) -> None:
@@ -1747,6 +1962,21 @@ class Humm2MelodyApp(App):
         if self.source == "both":
             self._set_hint(f"Mix {level}/{MIX_MAX} — press p to hear it.")
 
+    def action_cycle_notation(self) -> None:
+        """Switch how notes are spelled. Never changes what was detected."""
+        self.notation = next_scheme(self.notation)
+        row = self._find("#notation", NotationRow)
+        if row is not None:
+            row.show(self.notation)
+        self.profile.notation = self.notation
+        if not self.profile.is_guest:
+            try:
+                self.profiles.save(self.profile)
+            except OSError:
+                pass
+        self._show_notes(self.notes)
+        self._set_hint(f"Notes shown as {get_scheme(self.notation).label}.")
+
     def action_cycle_source(self) -> None:
         """Cycle what `p` plays: the transcription, your recording, or both."""
         if self.recorder.running:
@@ -1766,6 +1996,9 @@ class Humm2MelodyApp(App):
             self._set_hint("Plays the transcribed notes as tones.")
 
     def _clear_results(self) -> None:
+        self.editing = False
+        self.selected_note = None
+        self.current_session = None
         self.notes = []
         self.frames = []
         self.audio = None

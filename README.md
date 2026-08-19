@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (356 tests, no microphone required). But treat it
+> It works, and it is tested (391 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
@@ -161,6 +161,8 @@ or the level meter stays flat, enable it under
 | `[` / `]` | Pitch sensitivity − / + — re-transcribes instantly |
 | `<` / `>` | Pause sensitivity − / + |
 | `m` | Cycle playback: tones / your hum / both |
+| `n` | Cycle note naming |
+| `e` | Edit the detected notes |
 | `-` / `=` | Overlay mix: more hum / more tones |
 | `c` | Clear the display (saved runs are untouched) |
 | `u` | Switch profile |
@@ -440,6 +442,48 @@ neighbours. If you hum low-high-low and your two lows land 45 cents apart either
 side of a rounding boundary, they come out as two *different* notes — and
 merging adjacent notes cannot fix it, because the two lows are not adjacent. The
 high one is between them.
+
+## Note naming
+
+`n` cycles how notes are spelled. Pitch is always stored as a MIDI number, so
+switching can never change what was detected or what gets played — only how it
+is written down.
+
+| Scheme | Spelling |
+| --- | --- |
+| **English** | C D E F G A B |
+| **German** | C D E F G A **H** — and **B** means B♭ |
+| **Solfège** | Do Re Mi Fa Sol La Si (fixed do) |
+| **Sargam** | Sa Re Ga Ma Pa Dha Ni (lower case = komal) |
+
+German is the one worth knowing about: **H is what English calls B, and B is
+what English calls B♭.** Reading a German name with English habits puts you a
+semitone out, silently. The choice is remembered per profile.
+
+## Fixing a note by hand
+
+Detection gets things wrong. Press `e` and correct them instead of re-recording:
+
+| Key | Effect |
+| --- | --- |
+| `←` `→` | pick a note |
+| `↑` `↓` | a semitone higher or lower |
+| `shift+↑` `shift+↓` | an octave |
+| `,` `.` | move it earlier or later |
+| `-` `=` | make it shorter or longer |
+| `esc` | done |
+
+The selected note is highlighted in the timeline, the sequence and the table at
+once. Edits are written straight back to the run, and its playback is
+re-rendered to match.
+
+Those are the same keys as the pause and mix dials, which works because the
+timeline takes focus while editing: a focused widget is offered keys before any
+app-level binding, so the two sets cannot collide.
+
+**The recording is never touched.** `hum.flac` and `pitch_track.csv` stay
+exactly as captured — an edit corrects the *reading*, not the performance — so
+re-analysing later still starts from the original audio.
 
 ## Diagnosing a bad transcription
 

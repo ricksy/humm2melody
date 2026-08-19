@@ -198,6 +198,9 @@ Would show: detected key, and an option to transpose to C or to a chosen key.
 
 ## 8. Smaller items
 
+- **Editing is per note.** There is no way to insert a note that was missed
+  entirely, delete a spurious one, or undo an edit. Adding those is
+  straightforward now that the selection and write-back exist.
 - **Starred-first sorting, or a favourites filter.** Deliberately not done: the
   list stays newest-first so a fresh recording never appears below older
   favourites. Easy now that the flag is persisted.

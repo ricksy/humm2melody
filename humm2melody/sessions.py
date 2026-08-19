@@ -353,6 +353,24 @@ class SessionStore:
         self._write_manifest(session)
         return session
 
+    def update_notes(self, session: Session, notes: list[Note]) -> Session:
+        """Rewrite a run's notes after they were edited by hand.
+
+        The pitch track and the hum are left untouched: they are what was
+        recorded, and an edit is a correction to the *reading* of it, not a
+        claim about what was sung. Re-analysing later still starts from the
+        original audio.
+        """
+        if not self._owns(session):
+            raise ValueError(f"{session.path} is not inside {self.root}")
+        session.notes = list(notes)
+        self._write_manifest(session)
+        write_audio(
+            session.path / PLAYBACK_AUDIO, render(session.notes, PLAYBACK_RATE),
+            PLAYBACK_RATE,
+        )
+        return session
+
     def set_starred(self, session: Session, starred: bool) -> Session:
         """Mark a run as a favourite, or clear the mark.
 

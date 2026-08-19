@@ -52,6 +52,7 @@ class Profile:
     pause_sensitivity: int = 5
     mix: int = 5
     last_tab: str = "tab-record"
+    notation: str = "english"
     calibration: Calibration = field(default_factory=Calibration)
 
     @property
@@ -113,6 +114,7 @@ class ProfileStore:
                 "mix": profile.mix,
             },
             "last_tab": profile.last_tab,
+            "notation": profile.notation,
             "calibration": asdict(profile.calibration),
         }
         profile.path.parent.mkdir(parents=True, exist_ok=True)
@@ -147,6 +149,7 @@ class ProfileStore:
             pause_sensitivity=int(dials.get("pause", 5)),
             mix=int(dials.get("mix", 5)),
             last_tab=str(data.get("last_tab") or "tab-record"),
+            notation=str(data.get("notation") or "english"),
             calibration=Calibration(
                 **{k: v for k, v in raw.items() if k in known}
             ),

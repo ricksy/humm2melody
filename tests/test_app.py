@@ -10,6 +10,7 @@ import asyncio
 from pathlib import Path
 
 import numpy as np
+import pytest
 from humm2melody.audio import AudioError, LiveReading
 from humm2melody.pitch import PitchFrame, midi_to_hz
 from humm2melody.profiles import Profile, ProfileStore, guest
@@ -1356,3 +1357,222 @@ async def test_the_keep_button_is_offered_when_not_confident(tmp_path: Path):
         assert app.cal_saved is False
         assert keep.disabled is False
         assert "Keep it" in str(keep.label)
+
+
+# -- notation --------------------------------------------------------------
+
+
+async def test_notation_starts_english(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test():
+        assert app.notation == "english"
+        assert "English" in str(app.query_one("#notation", Static).content)
+
+
+async def test_n_cycles_notation_and_redraws(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        assert "C4" in str(app.query_one("#sequence", MelodySequence).content)
+
+        await pilot.press("n")
+        await pilot.pause()
+        assert app.notation == "german"
+
+        for _ in range(2):
+            await pilot.press("n")
+        await pilot.pause()
+        assert app.notation == "sargam"
+        assert "Sa4" in str(app.query_one("#sequence", MelodySequence).content)
+
+
+async def test_notation_does_not_change_the_notes(tmp_path: Path):
+    """Spelling is presentation; the detection must be untouched."""
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        before = [(n.midi, n.start, n.end) for n in app.notes]
+        for _ in range(3):
+            await pilot.press("n")
+        await pilot.pause()
+        assert [(n.midi, n.start, n.end) for n in app.notes] == before
+
+
+async def test_notation_is_remembered_per_profile(tmp_path: Path):
+    store = ProfileStore(tmp_path / "profiles")
+    app = make_app(tmp_path, profile=store.create("Ahmed"))
+    async with app.run_test() as pilot:
+        await pilot.press("n")
+        await pilot.pause()
+    assert store.list()[0].notation == "german"
+
+
+# -- editing ---------------------------------------------------------------
+
+
+async def test_e_enters_edit_mode_and_selects_a_note(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        await pilot.pause()
+        assert app.editing is True
+        assert app.selected_note == 0
+
+
+async def test_editing_needs_notes(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("e")
+        await pilot.pause()
+        assert app.editing is False
+
+
+async def test_arrows_move_the_selection(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        await pilot.press("right")
+        await pilot.pause()
+        assert app.selected_note == 1
+        await pilot.press("left")
+        await pilot.press("left")
+        await pilot.pause()
+        assert app.selected_note == 0  # clamped, not wrapped
+
+
+async def test_up_and_down_change_the_pitch(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        before = app.notes[0].midi
+        await pilot.press("e")
+        await pilot.press("up")
+        await pilot.pause()
+        assert app.notes[0].midi == before + 1
+        await pilot.press("down")
+        await pilot.press("down")
+        await pilot.pause()
+        assert app.notes[0].midi == before - 1
+
+
+async def test_shift_arrows_move_by_an_octave(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        before = app.notes[0].midi
+        await pilot.press("e")
+        await pilot.press("shift+up")
+        await pilot.pause()
+        assert app.notes[0].midi == before + 12
+
+
+async def test_a_transposed_note_keeps_its_tuning_reading(tmp_path: Path):
+    """Editing corrects the reading; it must not invent a wild cents figure."""
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        before = app.notes[0].cents_off
+        await pilot.press("e")
+        await pilot.press("up")
+        await pilot.pause()
+        assert app.notes[0].cents_off == pytest.approx(before, abs=1.0)
+
+
+async def test_comma_and_period_move_a_note_in_time(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        note = app.notes[0]
+        start, length = note.start, note.duration
+        await pilot.press("e")
+        await pilot.press("full_stop")
+        await pilot.pause()
+        assert app.notes[0].start == pytest.approx(start + app.NUDGE)
+        assert app.notes[0].duration == pytest.approx(length)
+
+
+async def test_a_note_cannot_be_moved_before_zero(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        for _ in range(30):
+            await pilot.press("comma")
+        await pilot.pause()
+        assert app.notes[0].start >= 0.0
+
+
+async def test_minus_and_equals_change_the_length(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        length = app.notes[0].duration
+        await pilot.press("e")
+        await pilot.press("equals_sign")
+        await pilot.pause()
+        assert app.notes[0].duration == pytest.approx(length + app.NUDGE)
+
+
+async def test_a_note_cannot_be_shortened_to_nothing(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        for _ in range(40):
+            await pilot.press("minus")
+        await pilot.pause()
+        assert app.notes[0].duration >= app.MIN_DURATION
+
+
+async def test_the_dials_still_work_outside_edit_mode(tmp_path: Path):
+    """The edit keys are the dials' keys; only focus keeps them apart."""
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("full_stop")
+        await pilot.pause()
+        assert app.pause_sensitivity == 6
+
+        await pilot.press("e")
+        await pilot.press("full_stop")
+        await pilot.pause()
+        assert app.pause_sensitivity == 6  # unchanged: the roll took the key
+
+
+async def test_escape_leaves_edit_mode(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.editing is False
+
+
+async def test_edits_are_written_back_to_the_run(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        await pilot.press("up")
+        await pilot.pause()
+
+        reloaded = app.store.list()[0]
+        assert reloaded.notes[0].midi == app.notes[0].midi
+
+
+async def test_editing_leaves_the_recording_alone(tmp_path: Path):
+    """An edit corrects the reading, not the audio it was read from."""
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        run = app.current_session.path
+        before = (run / PITCH_CSV).read_bytes()
+
+        await pilot.press("e")
+        await pilot.press("up")
+        await pilot.pause()
+
+        assert (run / PITCH_CSV).read_bytes() == before
