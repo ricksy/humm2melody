@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (418 tests, no microphone required). But treat it
+> It works, and it is tested (421 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
@@ -489,8 +489,12 @@ Notes are kept in time order as you move them, so nudging one past its
 neighbour cannot leave the table reading out of sequence, and the selection
 follows the note itself rather than its position.
 
-Every edit is undoable (50 deep). Since edits write straight through to the
-run, without undo a mistyped key would be permanent.
+Every edit is undoable (50 deep). Since edits write through to the run, without
+undo a mistyped key would be permanent.
+
+Writing back is deferred until you pause, and forced when you finish. Saving
+re-encodes the run's playback and rebuilds a sidebar row per saved run, which
+is far too much to do on every keystroke once you have a few dozen recordings.
 
 Those are the same keys as the pause and mix dials, which works because the
 timeline takes focus while editing: a focused widget is offered keys before any

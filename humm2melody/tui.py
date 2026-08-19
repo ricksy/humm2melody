@@ -1149,6 +1149,7 @@ class Humm2MelodyApp(App):
         self.current_session: Session | None = None
         self.undo_stack: list[list[Note]] = []
         self.redo_stack: list[list[Note]] = []
+        self._save_timer = None
         self.audio = None
         self.audio_rate = 0
         self.sessions: list[Session] = []
@@ -1468,6 +1469,7 @@ class Humm2MelodyApp(App):
         session = self.selected_session
         if session is None:
             return
+        self._flush_edits()
         self._stop_playback()
         self.current_session = session
         self.editing = False
@@ -1526,6 +1528,7 @@ class Humm2MelodyApp(App):
                 "i add · del remove · z undo · esc done"
             )
         else:
+            self._flush_edits()
             runs = self._find("#runs", ListView)
             if runs is not None:
                 runs.focus()
@@ -1722,15 +1725,36 @@ class Humm2MelodyApp(App):
         end = max(note.start + self.MIN_DURATION, note.end + self.NUDGE * direction)
         self._replace_selected(end=end)
 
+    EDIT_SAVE_DELAY = 0.4
+
     def _save_edited_notes(self) -> None:
-        """Write edits back to the run they came from, if there is one."""
+        """Schedule a write-back, rather than doing one per keystroke.
+
+        Saving re-renders and re-encodes the run's playback, and refreshing
+        the sidebar tears down and rebuilds a row per saved run -- over a
+        hundred widget operations with sixty runs on disk. Per keypress that
+        queues faster than Textual can drain it and the UI stops responding,
+        which is exactly what holding an arrow key used to do.
+        """
+        if self.current_session is None:
+            return
+        if self._save_timer is not None:
+            self._save_timer.stop()
+        self._save_timer = self.set_timer(self.EDIT_SAVE_DELAY, self._flush_edits)
+
+    def _flush_edits(self) -> None:
+        """Write the edited notes out. Safe to call when nothing is pending."""
+        if self._save_timer is not None:
+            self._save_timer.stop()
+            self._save_timer = None
+
         session = self.current_session
         if session is None:
             return
         try:
             self.store.update_notes(session, self.notes)
         except (OSError, ValueError):
-            pass
+            return
         self.refresh_sessions(select=session.path)
 
     # -- calibration -------------------------------------------------------
@@ -2236,6 +2260,7 @@ class Humm2MelodyApp(App):
             return None
 
     def on_unmount(self) -> None:
+        self._flush_edits()
         for timer in (self._record_timer, self._play_timer):
             if timer is not None:
                 timer.stop()

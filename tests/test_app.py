@@ -1557,6 +1557,7 @@ async def test_edits_are_written_back_to_the_run(tmp_path: Path):
         await record_once(pilot)
         await pilot.press("e")
         await pilot.press("up")
+        await pilot.press("escape")  # writing back is deferred until you stop
         await pilot.pause()
 
         reloaded = app.store.list()[0]
@@ -1800,10 +1801,12 @@ async def test_insert_and_delete_reach_the_saved_run(tmp_path: Path):
         await record_once(pilot)
         await pilot.press("e")
         await pilot.press("i")
+        app._flush_edits()
         await pilot.pause()
         assert len(app.store.list()[0].notes) == len(app.notes)
 
         await pilot.press("delete")
+        app._flush_edits()
         await pilot.pause()
         assert len(app.store.list()[0].notes) == len(app.notes)
 
@@ -1963,3 +1966,56 @@ async def test_all_three_views_agree_on_the_selection(tmp_path: Path):
         # The table holds a Rich Table, so check its cells rather than its text.
         markers = list(table.content.columns[0]._cells)
         assert markers == ["1", "2", "▸"]
+
+
+async def test_editing_does_not_rebuild_the_sidebar_per_keystroke(tmp_path: Path):
+    """Holding an arrow key used to queue more widget work than Textual could drain."""
+    app = make_app(tmp_path)
+    async with app.run_test(size=(110, 70)) as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+
+        rebuilds = 0
+        original = app.refresh_sessions
+
+        def counting(*args, **kwargs):
+            nonlocal rebuilds
+            rebuilds += 1
+            return original(*args, **kwargs)
+
+        app.refresh_sessions = counting
+        for _ in range(15):
+            await pilot.press("up")
+        await pilot.pause()
+
+        assert app.notes[app.selected_note].midi > 0
+        assert rebuilds == 0  # deferred, not once per key
+
+
+async def test_pending_edits_are_written_when_editing_ends(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test(size=(110, 70)) as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        await pilot.press("up")
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert app.store.list()[0].notes[0].midi == app.notes[0].midi
+
+
+async def test_pending_edits_survive_loading_another_run(tmp_path: Path):
+    """Switching away must not silently drop what was just edited."""
+    app = make_app(tmp_path)
+    async with app.run_test(size=(110, 70)) as pilot:
+        await record_once(pilot)
+        edited = app.current_session.path
+        await pilot.press("e")
+        await pilot.press("up")
+        expected = app.notes[0].midi
+
+        app.load_selected_session()
+        await pilot.pause()
+
+        saved = next(r for r in app.store.list() if r.path == edited)
+        assert saved.notes[0].midi == expected
