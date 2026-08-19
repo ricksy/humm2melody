@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>humm2melody</title>
+<link rel="stylesheet" href="./src/app.css" />
+<link rel="manifest" href="./manifest.webmanifest" />
+<meta name="theme-color" content="#141417" />
+<!-- iOS ignores the manifest for the home screen and reads these instead. -->
+<link rel="apple-touch-icon" href="./public/icons/apple-touch-icon.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="humm2melody" />
+
+<header>
+  <h1>humm2melody</h1>
+  <nav id="tabs">
+    <button class="tab on" data-tab="record">Recording</button>
+    <button class="tab" data-tab="calibrate">Calibrating</button>
+    <button class="tab" data-tab="train">Training</button>
+  </nav>
+</header>
+
+<div id="status">Booting…</div>
+
+<section id="pane-record">
+  <div id="readout" class="readout"></div>
+  <div id="track"><div id="meter"></div></div>
+
+  <div class="controls">
+    <button id="start" disabled>Record</button>
+    <button id="stop" disabled>Stop</button>
+    <button id="play" disabled>Play</button>
+    <button id="playmix" disabled>Play with hum</button>
+    <button id="install" hidden>Install</button>
+  </div>
+
+  <div id="sequence" class="sequence"></div>
+  <div id="keys" class="panel"></div>
+  <div id="roll" class="panel"></div>
+  <div id="table"></div>
+
+  <div class="dials">
+    <div class="dial" id="dial-sensitivity"></div>
+    <div class="dial" id="dial-pause"></div>
+    <div class="dial" id="dial-mix"></div>
+    <div class="dial" id="dial-tempo"></div>
+    <div class="dial" id="notation"></div>
+  </div>
+</section>
+
+<section id="pane-calibrate" hidden>
+  <p class="placeholder">
+    Calibration lives in the desktop app for now — <code>humm2melody</code>,
+    Calibrating tab. Porting it is roadmap item 0; the analysis it needs
+    (<code>calibration.py</code>) is already numpy-only, so it crosses over.
+  </p>
+</section>
+
+<section id="pane-train" hidden>
+  <p class="placeholder">Not built yet, in either front end. Roadmap item 2.</p>
+</section>
+
+<footer class="perf">
+  <span>fps <b id="fps">—</b> / 43.1</span>
+  <span>per frame <b id="cost">—</b></span>
+  <span>margin <b id="budget">—</b></span>
+  <span id="build" class="dim"></span>
+  <span id="offline" class="dim"></span>
+</footer>
+
+<script type="module" src="./src/app.js"></script>

@@ -1,0 +1,90 @@
+/* Palette taken from tui.py so the two front ends read as one app. */
+:root {
+  color-scheme: dark;
+  --fg: #e6e6e6; --dim: #8a8a8a; --bg: #141417; --panel: #1a1a1f;
+  --line: #2c2c33; --accent: #7dd3fc; --sharp: #818cf8;
+  --highlight: #fbbf24; --selected: #f472b6; --green: #4ade80; --yellow: #facc15;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0 auto; padding: 1.5rem 1.25rem 3rem; max-width: 60rem;
+  background: var(--bg); color: var(--fg);
+  font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+header { display: flex; align-items: baseline; gap: 1.5rem; flex-wrap: wrap; }
+h1 { font-size: 1rem; margin: 0 0 .75rem; letter-spacing: .02em; }
+nav { display: flex; gap: .25rem; }
+.tab {
+  background: none; border: 0; border-bottom: 2px solid transparent;
+  color: var(--dim); font: inherit; padding: .25rem .6rem; cursor: pointer;
+}
+.tab.on { color: var(--fg); border-bottom-color: var(--accent); }
+.dim { color: var(--dim); }
+
+#status {
+  padding: .45rem .7rem; border: 1px solid var(--line); border-radius: 4px;
+  font-size: .82rem; margin: .5rem 0 1.25rem;
+}
+#status.good { color: var(--green); } #status.bad { color: #f87171; }
+#status.warn { color: var(--yellow); }
+
+.readout { display: flex; align-items: baseline; gap: 1rem; min-height: 3.2rem; }
+.readout .big { font-size: 2.6rem; font-weight: 600; color: var(--accent); }
+.readout .big.dim { color: var(--dim); }
+.in-tune { color: var(--green); } .off { color: var(--yellow); }
+
+#track { height: 5px; background: var(--line); border-radius: 3px;
+         overflow: hidden; margin: .5rem 0 1.25rem; }
+#meter { height: 100%; width: 0; background: var(--green); transition: width .05s linear; }
+
+.controls { display: flex; gap: .6rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+button:not(.tab):not(.chip) {
+  font: inherit; padding: .35rem .9rem; background: #222228; color: var(--fg);
+  border: 1px solid var(--line); border-radius: 4px; cursor: pointer;
+}
+button:disabled { opacity: .35; cursor: default; }
+
+.sequence { margin-bottom: 1rem; min-height: 1.6rem; }
+.seq { color: var(--accent); font-weight: 600; padding: .1rem .25rem; }
+.seq.active { background: var(--highlight); color: #000; border-radius: 3px; }
+.seq.chosen { color: var(--selected); }
+.gap { color: var(--dim); padding: 0 .3rem; }
+
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+         padding: .6rem; margin-bottom: 1rem; overflow-x: auto; }
+.roll .row-label { fill: var(--fg); font-size: 10px; font-family: inherit; }
+.roll .row-label.dim { fill: var(--dim); }
+.roll .axis { stroke: #3f3f46; }
+.roll .tick { fill: var(--dim); font-size: 9px; text-anchor: middle; font-family: inherit; }
+.note-bar { cursor: pointer; }
+.note-bar:hover { opacity: .8; }
+.keys .key-label { font-size: 9px; fill: #52525b; font-family: inherit; }
+
+table { border-collapse: collapse; width: 100%; font-size: .82rem; }
+th { text-align: right; color: var(--dim); font-weight: 400; }
+th:nth-child(2) { text-align: left; }
+th, td { padding: .22rem .55rem .22rem 0; border-bottom: 1px solid var(--line);
+         text-align: right; }
+td.n { text-align: left; color: var(--accent); font-weight: 600; }
+tr.chosen td.n { color: var(--selected); }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: #1f1f26; }
+
+.dials { margin-top: 1.5rem; display: grid; gap: .3rem; }
+.dial { display: flex; align-items: center; gap: .5rem; font-size: .82rem;
+        flex-wrap: wrap; }
+.dial-label { font-weight: 600; min-width: 5rem; }
+.keys { color: var(--dim); min-width: 2.2rem; }
+.pips { letter-spacing: .12em; color: #52525b; cursor: pointer; }
+.pip.on { color: var(--highlight); font-weight: 700; }
+.caption { color: var(--dim); }
+.chips { display: flex; gap: .2rem; }
+.chip { background: none; border: 0; color: #71717a; font: inherit;
+        padding: .1rem .45rem; border-radius: 3px; cursor: pointer; }
+.chip.on { background: var(--highlight); color: #000; font-weight: 600; }
+
+.placeholder { color: var(--dim); font-size: .85rem; max-width: 40rem; }
+.perf { display: flex; gap: 1.5rem; font-size: .75rem; color: var(--dim);
+        border-top: 1px solid var(--line); padding-top: .8rem; margin-top: 2rem;
+        flex-wrap: wrap; }
+.perf b { color: var(--fg); }

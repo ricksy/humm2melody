@@ -1,0 +1,8 @@
+# Build output and vendored runtime — all regenerable, none of it source.
+node_modules/
+dist/
+public/*.whl
+public/wheel.json
+public/pyodide/
+public/icons/
+scripts/pwa.env
