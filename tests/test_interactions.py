@@ -529,3 +529,31 @@ async def test_undo_does_not_reach_across_a_clear(tmp_path: Path):
 
         assert [n.midi for n in app.notes] == fresh
         assert "Nothing to undo" in hint(app)
+
+
+# -- the calibration pane during startup -----------------------------------
+
+
+def test_the_calibration_pane_can_be_refreshed_before_it_has_composed():
+    """Every other refresh path in the app tolerates a half-built tree."""
+    from humm2melody.tui import CalibrationPane
+
+    CalibrationPane(id="calibration").show(
+        step=None, recording=False, takes={}, profile=guest()
+    )  # must not raise NoMatches
+
+
+def test_the_training_pane_can_be_refreshed_before_it_has_composed():
+    """The Training tab is refreshed on startup too, from the same code path."""
+    from humm2melody.training import Session, build_exercises
+    from humm2melody.tui import TrainingPane
+
+    exercise = build_exercises()[0]
+    TrainingPane(id="training").show(
+        exercise=exercise,
+        session=Session(exercise=exercise),
+        attempt=None,
+        recording=False,
+        cents=None,
+        scheme="english",
+    )

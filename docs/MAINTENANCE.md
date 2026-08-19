@@ -39,7 +39,7 @@ Only needed if you changed the **UI, the demo melody, or the detector**.
 
 ```bash
 brew install vhs                     # once
-./scripts/refresh-gifs.sh            # both, or: refresh-gifs.sh demo
+./scripts/refresh-gifs.sh            # all three, or: refresh-gifs.sh demo
 ```
 
 The script runs the tests first (a broken app records a broken GIF), clears the
@@ -53,9 +53,12 @@ broken UI at a perfectly normal file size. Doing this has caught a level meter
 pegged at full, a caption clipped by the sidebar, and a mid-word text wrap.
 
 Check: a note in the live readout, bars in the timeline, rows in the detail
-table, three dials aligned, runs in the sidebar, nothing clipped.
+table, three dials aligned, runs in the sidebar, nothing clipped. On the
+training capture, check the pitch bar fills the pane and the green band is
+several rows tall — it is sized from the widget, so it is the first thing a
+layout change breaks.
 
-Keep both GIFs under ~1 MB. If a tape gets longer, drop `Set Framerate` to 10.
+Keep each GIF under ~1 MB. If a tape gets longer, drop `Set Framerate` to 10.
 
 ### If the timings drift
 
@@ -124,7 +127,7 @@ scp "$BLOG_HOST:$BLOG_SITE/content/posts/$BLOG_SLUG.md" docs/blog/
 ## 6. Quick full pass
 
 ```bash
-./scripts/refresh-gifs.sh                  # tests + both GIFs + contact sheets
+./scripts/refresh-gifs.sh                  # tests + all GIFs + contact sheets
 # ...look at the contact sheets before going further...
 git add -A && git commit -m "..." && git push
 ./scripts/publish-blog.sh --images         # GIFs to the blog, rebuild, verify

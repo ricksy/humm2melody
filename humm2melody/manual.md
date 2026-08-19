@@ -31,7 +31,7 @@ recordings list scroll inside themselves.
 | --- | --- |
 | **Recording** | Hum, transcribe, edit, and play back. |
 | **Calibrating** | Teach the app your voice, once. |
-| **Training** | Not built yet. |
+| **Training** | Practise hitting a note and holding it. |
 | **Manual** | This text. |
 
 Press `u` to switch profile. The app reopens on the tab you used last.
@@ -104,6 +104,70 @@ Calibration records your range, how far off concert pitch you sit, how much you
 drift while holding a note, how much you slide between notes, and how
 accurately you sang the tune. Your range narrows the detector's search, which
 is the one thing that prevents an octave error.
+
+---
+
+## Train your voice
+
+The **Training** tab is for the other half of the problem. The app can only
+transcribe what you actually sang; if every hummed note lands on the same
+pitch, no amount of dial-turning will find a melody that is not in the
+recording.
+
+One target note at a time. Press `l` to hear it, `space` to sing it, `space`
+again to stop.
+
+`l` holds the note rather than previewing it. The tone keeps sounding while you
+sing, so you can match it as you go instead of from memory, and it retunes as
+you move through the exercise. Press `l` again, or leave the tab, to stop it.
+**Use headphones**: through speakers the microphone hears the tone as well as
+your voice, and scores it as though you had sung it. A tall bar shows where your voice is: the green band is the
+note, above the band means sharp, below means flat. The tip moves while you
+sing, so you can correct yourself mid-note rather than read a verdict
+afterwards.
+
+| Key | Action |
+| --- | --- |
+| `l` | Hold the target note, or stop holding it |
+| `space` | Start and stop singing |
+| `f` | Next note |
+| `b` | Back a note |
+| `x` | Change exercise |
+
+Three exercises, in order, because each one needs the one before it:
+
+| Exercise | Skill |
+| --- | --- |
+| **Hold one note** | Keep a single pitch steady. Nothing else is measurable without it. |
+| **Match the note** | Sing back a pitch you have just heard. This is the skill most people are missing. |
+| **Climb the ladder** | Move a known distance between pitches, which is what a melody is. |
+
+Exercises are pitched into your calibrated range, so calibrate first if you
+have not. Without a calibration they sit around middle C, which suits nobody
+in particular.
+
+The bar is damped on purpose: the reading is median-filtered over about 120 ms,
+so one bad frame cannot throw the tip. If the bar looks calmer than your voice
+feels, that is why.
+
+When you are further off than the scale shows, it zooms out — 150 cents either
+side, then 300, 700 or 1500 — and back in once you have settled. The readout
+names the note you are actually singing as well as the distance to the target,
+so an octave error reads as `F2` rather than as `-1200¢`.
+
+### How the score works
+
+On the note counts as within 35 cents, tighter than the 50 cents at which the
+app would round to that note: sitting on a rounding boundary is not the same
+as singing the note.
+
+The score weights **holding** the pitch for a second above merely touching it,
+because a voice that crosses the right pitch on its way past has not sung the
+note. Three stars means you held it. Retrying can only improve your score for
+a note, and stopping without making a sound does not count as an attempt.
+
+Nothing from the Training tab is saved to `recordings/` — it is practice, not
+a take.
 
 ---
 

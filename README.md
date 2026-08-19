@@ -82,7 +82,7 @@ The app opens by asking who is humming, then shows three tabs.
 | --- | --- |
 | **Recording** | Hum, read the transcription, play it back, edit it, and manage saved runs. |
 | **Calibrating** | Teach the app your voice once, and let it set the dials from what you sang. |
-| **Training** | Placeholder. The plan is to help your voice get steadier. See `docs/ROADMAP.md`. |
+| **Training** | Practise hitting a note and holding it, with live feedback and a score. |
 
 The Recording tab stacks six control rows above the results: the **Pitch**,
 **Pauses**, **Mix** and **Tempo** dials, then the **Voice** and **Notation**
@@ -100,7 +100,7 @@ These keys work on any tab unless the table says otherwise.
 
 | Key | Action |
 | --- | --- |
-| `space` | Start or stop. On the Recording tab it records; on the Calibrating tab it starts or finishes a calibration step. |
+| `space` | Start or stop. On the Recording tab it records; on the Calibrating tab it starts or finishes a calibration step; on the Training tab it starts or ends an attempt at the target note. |
 | `p` | Play back |
 | `m` | Cycle what `p` plays: tones only, your hum, or both |
 | `v` | Cycle the playback voice: pure, rich, chords |
@@ -137,6 +137,16 @@ has no other way out.
 | `l` | Play the reference melody |
 | `y` | Keep a calibration the app was not confident about |
 | `c` | Start over |
+
+**On the Training tab:**
+
+| Key | Action |
+| --- | --- |
+| `space` | Start singing, and stop when you are done |
+| `l` | Hold the target note, or stop holding it |
+| `f` | Next note |
+| `b` | Back a note |
+| `x` | Change exercise |
 
 **In the profile chooser:**
 
@@ -557,6 +567,123 @@ The timeline draws at most 32 semitone rows, so one stray octave cannot blow up
 the view. When a run spans more than that, the top is cut off and the note table
 is authoritative.
 
+## Train your voice
+
+Everything above makes the app better at understanding an imperfect voice. The
+**Training** tab is the other half: making the voice do what you meant. If
+every hummed note lands on the same pitch, the recording genuinely does not
+contain a melody, and no dial will find one.
+
+![Training: hearing a target note, singing it, and being scored on the result](docs/training.gif)
+
+One target note at a time. Press `l` to hear it, `space` to sing it, `space`
+again to stop.
+
+`l` starts a **held reference tone** and leaves it running, so you can sing
+*against* the note rather than from memory — a far easier exercise, and the one
+worth doing first. It follows the target as you move through the exercise, and
+stops on a second `l` or when you leave the tab.
+
+> **Wear headphones while the tone is holding.** Through speakers the
+> microphone hears the reference as well as you, and a pitch detector cannot
+> tell them apart — it will score the tone as though you had sung it.
+
+The tone is built to loop cleanly: its length is rounded to a whole number of
+cycles so the last sample runs into the first with the phase intact. It is also
+quieter and plainer than playback, because it has to sit under a voice instead
+of competing with one.
+
+```
+  Hold one note   Sing the note and keep it steady
+  note 1 of 1   ·   average 74
+
+  Sing  C4   ★★☆
+ +45¢ ██████████████████████████████████  ◄
+ +20¢ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  +0¢ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+ -20¢ ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+      ··································
+-140¢ ··································
+
+  ● +45¢  held 0.6s of 1s
+  space  stop
+```
+
+The green band is the note. Above it you are sharp, below it flat, and the tip
+moves as you sing so you can correct yourself mid-note instead of reading a
+verdict afterwards. The scale runs a semitone either side of the target; a
+voice further out than that pins to the top or bottom row with a `▲` or `▼`
+and the real figure, because "off the scale" still has to say which way.
+
+### Why the bar does not twitch
+
+A raw pitch reading arrives about 43 times a second and any one of them can be
+wrong — an octave flip, a breath, a consonant. Left alone the tip jumps a
+screen's height on a steady note, which teaches you nothing except to ignore
+the bar.
+
+Two things settle it:
+
+| Measure | What it does |
+| --- | --- |
+| **A five-frame median** | About 120 ms. A single bad frame moves a median not at all, where an average would drag the tip a fifth of the way to it. The same tool the transcriber uses on the pitch track. |
+| **Easing** | The tip glides toward the filtered value instead of stepping to it. |
+
+Only the first touches the score. Easing is cosmetic, so a smoother bar can
+never flatter your singing — and what gets scored is what the bar showed, since
+a green bar followed by a zero would just teach you to distrust the display.
+
+What the tab deliberately does **not** do is narrow the detector's search to a
+window around the target. That would rule out the octave, which is where a
+pitch detector's worst mistakes live — but a voice outside the window cannot be
+reported at all, only mis-reported at whatever the nearest edge is. That reads
+as "always too low" or "always too high" and gives you nothing to correct.
+Being far off is the condition this tab exists to treat, so the search has to
+reach that far.
+
+### When you are a long way off
+
+The scale zooms out rather than pinning the tip to an edge: 150 cents either
+side normally, then 300, 700 or 1500 as needed, and back in once your voice has
+settled there for about a second. A tip stuck against the top says "too high"
+and nothing else — no gradient to follow, no way to tell whether you are
+getting closer, which is the entire mechanism the tab runs on.
+
+The readout also names the note you are **actually** singing, not just the
+distance to the target. `F2` tells you at a glance that you are an octave out;
+`−1200¢` makes you work it out. After each attempt it says the same thing about
+the take as a whole — *you sang F2* — which is the fastest way to tell a
+misheard note from a missed one.
+
+### The exercises
+
+Three, in order, because each one needs the one before it.
+
+| Exercise | Skill | Why it is there |
+| --- | --- | --- |
+| **Hold one note** | Keep a single pitch steady | Nothing else is measurable without it |
+| **Match the note** | Sing back a pitch you just heard | The skill most people are missing |
+| **Climb the ladder** | Move a known distance between pitches | This is what a melody is |
+
+Targets are pitched into your calibrated range, so calibrate first. Without a
+calibration they sit around middle C, which suits nobody in particular.
+Training someone outside their range guarantees failure and teaches them only
+that they are bad at it.
+
+### Scoring
+
+On the note means within **35 cents** — tighter than the 50 cents at which the
+app would round to that note, because sitting on a rounding boundary is not the
+same as singing the note, and practising at the boundary teaches nothing.
+
+The score weights holding the pitch for a second at roughly two to one over
+merely touching it: a voice that crosses the right pitch on its way past has
+not sung the note. Three stars means you held it. Retrying keeps your best
+score for that note, so another go can only help, and stopping without making a
+sound is not counted as a failed attempt.
+
+Nothing on this tab is written to `recordings/`. It is practice, not a take.
+
 ## Diagnose a bad transcription
 
 When a run comes out wrong, `analyze` re-runs detection over its saved hum and
@@ -795,7 +922,6 @@ out.
   the current answer.
 - **No key detection**, no transposition, and no MIDI or MusicXML export yet.
 - Playback is a plain synth tone, not a piano sample.
-- The Training tab is a placeholder.
 
 `docs/ROADMAP.md` lists the outstanding work, with what already exists for each.
 Several of the items are smaller than they look.

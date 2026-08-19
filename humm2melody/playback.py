@@ -89,6 +89,35 @@ def _voice(freq: float, duration: float, sample_rate: int) -> np.ndarray:
     return (wave * _envelope(length, sample_rate)).astype(np.float32)
 
 
+DRONE_SECONDS = 2.0
+"""Roughly how long one turn of a looping reference tone lasts."""
+
+
+def drone(
+    midi: int, sample_rate: int = SAMPLE_RATE, *, amplitude: float = 0.16
+) -> np.ndarray:
+    """A reference tone built to be looped without a click at the seam.
+
+    The length is rounded to a whole number of cycles, so the last sample runs
+    into the first with the phase intact. Anything else gives a discontinuity
+    once per turn, and a click every two seconds is worse than no reference at
+    all.
+
+    Quieter and plainer than `_voice`: this plays *while* you sing, so it has
+    to sit under your own voice rather than compete with it, and it has no
+    envelope because a drone has no attack to hear.
+    """
+    freq = midi_to_hz(midi)
+    cycles = max(1, round(DRONE_SECONDS * freq))
+    length = max(1, int(round(cycles * sample_rate / freq)))
+    t = np.arange(length) / sample_rate
+
+    # Sine plus a quiet octave: enough body to hear against a voice, without
+    # the harmonics that would make it hard to sing over.
+    wave = np.sin(2 * np.pi * freq * t) + 0.18 * np.sin(2 * np.pi * 2 * freq * t)
+    return (wave * amplitude).astype(np.float32)
+
+
 def _envelope(length: int, sample_rate: int) -> np.ndarray:
     """Attack / decay / sustain / release, clamped to fit short notes."""
     env = np.ones(length, dtype=np.float64)
@@ -282,6 +311,7 @@ class Player:
         # Bumped per playback. A worker from a previous take must not write
         # the cursor of the current one after it has been superseded.
         self._generation = 0
+        self.looping = False
         self._lock = threading.Lock()
         self._closed: set = set()
 
@@ -308,8 +338,14 @@ class Player:
         self.voice = voice
         self.play_audio(render(notes, rate, speed=speed, voice=voice), rate)
 
-    def play_audio(self, buffer: np.ndarray, rate: int | None = None) -> None:
-        """Start playing an arbitrary mono buffer."""
+    def play_audio(
+        self, buffer: np.ndarray, rate: int | None = None, loop: bool = False
+    ) -> None:
+        """Start playing an arbitrary mono buffer.
+
+        With `loop`, it plays until something stops it, wrapping straight back
+        to the first sample -- so the buffer had better end where it began.
+        """
         import sounddevice as sd
 
         self.stop()
@@ -318,7 +354,11 @@ class Player:
         if buffer.size == 0:
             return
 
-        lead = np.zeros(int(LEAD_IN * self.sample_rate), dtype=np.float32)
+        # No lead-in silence on a loop: it would be a gap once per turn.
+        lead = np.zeros(
+            0 if loop else int(LEAD_IN * self.sample_rate), dtype=np.float32
+        )
+        self.looping = loop
         self._buffer = np.concatenate([lead, buffer])
         self._cursor = 0
         self._halt.clear()
@@ -353,7 +393,9 @@ class Player:
                     return  # superseded; the newer take owns the state now
                 start = self._cursor
                 if start >= self._buffer.size:
-                    break
+                    if not self.looping:
+                        break
+                    start = 0  # phase-continuous by construction
                 chunk = self._buffer[start : start + BLOCK]
                 if chunk.size < BLOCK:
                     chunk = np.concatenate(

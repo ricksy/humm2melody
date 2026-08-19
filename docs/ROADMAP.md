@@ -7,14 +7,14 @@ most, because several of these are smaller than they look.
 Written to be picked up cold: assume the reader has not seen the conversation
 that produced them.
 
-## Status at v0.13.2
+## Status at v0.15.0
 
 | # | Item | State |
 | --- | --- | --- |
-| 0 | Calibrating and Training tabs | Calibrating **done in v0.7.0**, Training still a placeholder |
+| 0 | Calibrating and Training tabs | Calibrating **done in v0.7.0**, Training **done in v0.15.0** |
 | 1 | Per-user vocal calibration | **done in v0.7.0**, wired into detection in v0.8.0 |
-| 2 | Training mode | Not started — **next**, and unblocked by calibration |
-| 3 | Refresh the blog post | **Stale.** The post still describes v0.1 |
+| 2 | Training mode | **Done in v0.15.0** — three exercises, live bar, scoring |
+| 3 | Refresh the blog post | **Stale.** The post still describes v0.1 — **next** |
 | 4 | Rhythm and quantisation | Not started — the hard half already exists |
 | 5 | Compressed audio storage | **Done in v0.6.0** |
 | 6 | Finish note editing | **Done in v0.10.0**, extended in v0.11.0 and v0.13.0 |
@@ -33,23 +33,15 @@ Three items on this list are now covered by shipped work and are marked as such
 below: item 6 is finished, item 9's "starred-first sorting" remains a deliberate
 no, and item 9's "re-analyse from the CLI" is served by `analyze --sweep`.
 
-**Recommended next:** item 2, training mode — or item 3, the blog post, which is
-now twelve versions out of date. Calibration supplies what training was missing:
-a per-user notion of what "correct" means, and a reference melody with scoring
-that already measures accuracy in cents.
+**Recommended next:** item 3, the blog post, which is now fourteen versions out
+of date and is the only item with an audience waiting for it.
 
 ---
 
-## 0. Fill in the Calibrating and Training tabs
+## 0. Fill in the Calibrating and Training tabs — done
 
-**Half done.** The Calibrating tab is finished — see item 1. The Training tab is
-still the original placeholder.
-
-Everything the placeholder needed is in place: profiles are chosen at startup,
-`Profile.calibration` is populated by a real calibration run rather than sitting
-at `None`, and each saved run records which profile made it.
-
-What remains is item 2.
+Calibrating shipped in v0.7.0 (item 1); Training in v0.15.0 (item 2). Both tabs
+now hold real features, and neither depends on anything outstanding.
 
 ---
 
@@ -94,40 +86,29 @@ exist.
 
 ---
 
-## 2. Training mode
+## 2. Training mode — done in v0.15.0
 
-**What.** Interactive real-time coaching: the app asks for a note, shows how
-close you are, and tells you when you are holding it.
+Three exercises in dependency order — hold one note, match a note you have just
+heard, climb a major scale — with a target note, a tall live bar showing where
+your voice is against it, and a score per note.
 
-**Why.** The other half of the problem. Everything so far makes the app better
-at understanding an imperfect voice; this makes the voice better.
+The design questions this entry used to pose, answered by what shipped:
 
-**Now unblocked.** Calibration already supplies most of the missing pieces: a
-reference melody with playback, scoring against it in cents, a per-user record
-of accuracy and steadiness to set thresholds from, and a profile to store
-progress in. Training is largely calibration with feedback attached and a
-target you must hold.
+- **What does it ask for?** A fixed target per exercise, pitched into the
+  singer's calibrated range rather than at a fixed absolute pitch.
+- **What counts as correct?** Within 35 cents, held for one second. Tighter
+  than the 50 cents at which the app rounds to a note, because practising at a
+  rounding boundary teaches nothing.
+- **Which skill?** Steadiness first, then matching, then intervals. Steadiness
+  is the one that most improves transcription, so it is the exercise you meet
+  first.
+- **How is progress shown?** Live cents and held time while singing, then a
+  verdict, a score and stars; the best score per note is kept, so a retry can
+  only help.
 
-**Already in place.** More than it seems. The live readout already produces
-pitch, note name and cents deviation at ~43 frames/sec, and `NoteReadout`
-already renders in-tune/sharp/flat. The missing parts are a target to compare
-against, a scoring rule, and a lesson structure.
-
-**Design questions — these are the real work, not the code.**
-
-- What does it ask for? A fixed scale, intervals, or notes from a melody you
-  just hummed (most motivating, arguably).
-- What counts as correct? Within N cents, held for M milliseconds. Both should
-  probably come from the user's profile rather than being fixed.
-- How is progress shown — a streak, a per-note accuracy history, a target you
-  must hold inside a moving band?
-- Does it drill *pitch accuracy*, *interval accuracy*, or *steadiness*? These
-  are different skills and the third is what most improves transcription.
-
-**Suggestion.** Start with one exercise: show a target note, play it, ask the
-user to match and hold it for one second, show a live band they must stay
-inside. That alone is useful and exercises every piece the fuller version
-needs.
+Not built, and deliberately: no cross-session progress history. Practice is not
+stored in the profile and training runs are not written to `recordings/`.
+Worth adding only if someone actually wants to watch a number climb over weeks.
 
 ---
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate the documentation GIFs and build a contact sheet to check them.
 #
-#   scripts/refresh-gifs.sh            both GIFs
+#   scripts/refresh-gifs.sh            every GIF
 #   scripts/refresh-gifs.sh demo       just one
 #
 # The contact sheet is the point. A capture can record a perfectly broken UI
@@ -24,7 +24,7 @@ uv run pytest -q | tail -1
 
 # The tapes write runs and profiles into /tmp; clear them so each capture
 # starts from the same state and the sidebar is not full of old takes.
-rm -rf /tmp/h2m-demo /tmp/h2m-sessions /tmp/h2m-profiles
+rm -rf /tmp/h2m-demo /tmp/h2m-sessions /tmp/h2m-train /tmp/h2m-profiles
 
 record() {
     local name="$1"
@@ -57,8 +57,9 @@ record() {
 case "$WHICH" in
     demo)     record demo ;;
     sessions) record sessions ;;
-    all)      record demo; record sessions ;;
-    *) echo "usage: $0 [demo|sessions|all]" >&2; exit 2 ;;
+    training) record training ;;
+    all)      record demo; record sessions; record training ;;
+    *) echo "usage: $0 [demo|sessions|training|all]" >&2; exit 2 ;;
 esac
 
 cat <<'NOTE'

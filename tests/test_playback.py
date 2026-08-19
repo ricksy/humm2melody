@@ -5,7 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from humm2melody.playback import TAIL, render
+from humm2melody.pitch import hz_to_midi, midi_to_hz
+from humm2melody.playback import TAIL, drone, render
 from humm2melody.segment import Note, segment_notes
 
 from .test_segment import SR, analyse
@@ -478,3 +479,41 @@ def test_speed_keeps_the_gaps_between_notes_silent():
     # The gap at 0.4-1.0s becomes 0.8-2.0s at half speed.
     quiet = audio[int(1.0 * SR) : int(1.8 * SR)]
     assert np.max(np.abs(quiet)) < 0.01
+
+
+# -- the training reference tone -------------------------------------------
+
+
+def test_the_drone_loops_without_a_click():
+    """The seam has to be quieter than the waveform's own steepest step.
+
+    Anything louder is a discontinuity, and a click once every two seconds is
+    worse than having no reference tone at all.
+    """
+    for midi in (48, 55, 60, 67, 72):
+        wave = drone(midi, 44100)
+        seam = abs(float(wave[0]) - float(wave[-1]))
+        steepest = float(np.max(np.abs(np.diff(wave))))
+        assert seam <= steepest * 1.5, midi
+
+
+def test_the_drone_is_the_note_it_was_asked_for():
+    for midi in (50, 60, 71):
+        wave = drone(midi, 44100)
+        spectrum = np.abs(np.fft.rfft(wave * np.hanning(wave.size)))
+        peak = np.fft.rfftfreq(wave.size, 1 / 44100)[int(np.argmax(spectrum))]
+        assert abs(hz_to_midi(peak) - midi) < 0.1
+
+
+def test_the_drone_is_quieter_than_the_playback():
+    """It plays under a voice, not over one."""
+    note = Note(midi=60, start=0.0, end=1.0, freq=midi_to_hz(60), confidence=1.0)
+    assert np.max(np.abs(drone(60, SR))) < np.max(np.abs(render([note], SR)))
+
+
+def test_the_drone_has_no_envelope():
+    """A held tone has no attack to hear, and a fade would show up per loop."""
+    wave = drone(60, 44100)
+    early = float(np.max(np.abs(wave[: 44100 // 10])))
+    late = float(np.max(np.abs(wave[-44100 // 10 :])))
+    assert abs(early - late) < 0.01

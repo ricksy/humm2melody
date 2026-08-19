@@ -29,6 +29,9 @@ from textual.widgets import (
 from .audio import AudioError, Recorder
 from .calibration import STEPS as CALIBRATION_STEPS
 from .calibration import GLOBAL_FMAX, GLOBAL_FMIN, calibrate, voice_bounds
+from .training import Attempt as TrainingAttempt
+from .training import Session as TrainingSession
+from .training import IN_TUNE_CENTS, build_exercises
 from .pitch import NOTE_NAMES, hz_to_midi, midi_to_hz
 from .naming import SCHEMES, get_scheme, next_scheme, spell
 from .playback import (
@@ -42,6 +45,7 @@ from .playback import (
     VOICE_LABELS,
     VOICE_NOTES,
     VOICES,
+    drone,
     mix_hum_with_tones,
     next_voice,
     tempo_speed,
@@ -736,6 +740,9 @@ class CalibrationPane(Vertical):
     ) -> None:
         from .calibration import STEPS, describe
 
+        if not self.query("#cal-title"):
+            # Mounted but not composed yet: a startup refresh can arrive first.
+            return
         self._show_title()
         self._show_steps(STEPS, step, recording, takes)
         self._show_live(recording, live, level, step, STEPS)
@@ -923,27 +930,257 @@ def _manual_text() -> str:
         )
 
 
-def _placeholder_training() -> Text:
-    text = Text()
-    text.append("\n  Training\n\n", style="bold")
-    text.append(
-        "  Not built yet. The plan is the other half of the problem: rather\n"
-        "  than making the app better at understanding an imperfect voice,\n"
-        "  help the voice get steadier.\n\n",
-        style="dim",
-    )
-    text.append(
-        "  The live readout already produces pitch, note and cents about 43\n"
-        "  times a second, so the machinery exists. What it needs is a target\n"
-        "  to compare against and a way to score you.\n\n",
-        style="dim",
-    )
-    text.append(
-        "  First exercise, once built: show a target note, play it, and ask\n"
-        "  you to match and hold it inside a band for a second.\n",
-        style="dim",
-    )
-    return text
+BAR_ROWS = 15
+"""Fallback height, used before the widget knows its size."""
+
+MIN_BAR_ROWS, MAX_BAR_ROWS = 11, 27
+
+BAR_SPANS = (150.0, 300.0, 700.0, 1500.0)
+"""Scales the pitch bar can show, in cents either side of the target.
+
+It zooms out rather than pinning the tip to an edge. A tip stuck at the top
+says "too high" and nothing else -- no gradient to follow, no way to tell
+whether you are getting closer. Zoomed out you can watch yourself move, which
+is the entire mechanism by which the tab is supposed to work.
+"""
+
+BAR_SPAN_CENTS = BAR_SPANS[0]
+"""How far above and below the target the bar shows. Three semitones."""
+
+
+class PitchBar(Static):
+    """A vertical meter: the tip is where your voice is, green is the note.
+
+    Deliberately large and deliberately live. Someone who cannot yet match a
+    pitch needs to see *which way* they are wrong while they are still singing,
+    not a verdict afterwards.
+
+    The scale spans a semitone either side of the target, so the green band is
+    several rows tall rather than a hairline. A voice further out than that is
+    pinned to the top or bottom row with the real figure spelled out beside it,
+    because "off the scale" still has to say which way.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.span = BAR_SPANS[0]
+        self._calm = 0
+
+    def reset(self) -> None:
+        """Back to the close-up scale. Each attempt starts hopeful."""
+        self.span = BAR_SPANS[0]
+        self._calm = 0
+
+    def _rescale(self, cents: float | None) -> None:
+        """Pick a scale that contains the voice, and hold it steady.
+
+        Zooming out is immediate -- a tip you cannot see is useless. Zooming
+        back in waits until the voice has been comfortably inside the smaller
+        scale for a while, so the bar does not flap between two scales while
+        someone hovers on the boundary.
+        """
+        if cents is None:
+            return
+        reach = abs(cents)
+        grew = False
+        while self.span < BAR_SPANS[-1] and reach > self.span * 0.95:
+            self.span = BAR_SPANS[BAR_SPANS.index(self.span) + 1]
+            grew = True
+        if grew:
+            self._calm = 0
+            return
+        smaller = BAR_SPANS[max(0, BAR_SPANS.index(self.span) - 1)]
+        if self.span > BAR_SPANS[0] and reach < smaller * 0.55:
+            self._calm += 1
+            if self._calm >= 12:  # about a second of steady singing
+                # Straight to the scale that fits, not one step per second:
+                # once the voice has settled there is nothing to ease.
+                self.span = next(
+                    s for s in BAR_SPANS if s >= max(reach * 1.8, BAR_SPANS[0])
+                )
+                self._calm = 0
+        else:
+            self._calm = 0
+
+    def show(
+        self,
+        cents: float | None,
+        tolerance: float,
+        width: int = 34,
+        rows: int = BAR_ROWS,
+    ) -> None:
+        rows = max(MIN_BAR_ROWS, min(MAX_BAR_ROWS, rows)) | 1  # odd: one centre row
+        self._rescale(cents)
+        span = self.span
+        step = 2 * span / rows
+        hit_row = None
+        if cents is not None:
+            pinned = max(-span, min(span, cents))
+            hit_row = min(rows - 1, int((span - pinned) / step))
+
+        text = Text()
+        for row in range(rows):
+            centre = span - (row + 0.5) * step
+            # Zoomed out, the tolerance can be finer than one row; the middle
+            # row is still the note, or the target would disappear.
+            in_band = abs(centre) <= max(tolerance, step / 2)
+            edge = row in (0, rows - 1)
+
+            hit = row == hit_row
+            if hit:
+                # The row you are on says where you actually are, not where the
+                # row sits -- that is the number you are trying to change.
+                label, style = f"{cents:+5.0f}¢ ", "bold"
+            elif in_band or edge:
+                label, style = f"{centre:+5.0f}¢ ", "dim"
+            else:
+                label, style = "       ", "dim"
+            text.append(label, style=style)
+
+            if hit:
+                style = "black on green" if in_band else "black on #f87171"
+                text.append("█" * width, style=style)
+                if cents > span:
+                    mark = "  ▲"  # past the widest scale: over an octave out
+                elif cents < -span:
+                    mark = "  ▼"
+                else:
+                    mark = "  ◄"
+                text.append(mark, style="bold green" if in_band else "bold #f87171")
+            elif in_band:
+                text.append("░" * width, style="green")
+            else:
+                text.append("·" * width, style="grey27")
+            text.append("\n")
+        self.update(text)
+
+
+class TrainingPane(Vertical):
+    """The Training tab: one target note at a time, scored as you sing."""
+
+    HEAD_AND_FOOT_ROWS = 10
+    """Lines the title and the readout need; the bar takes what is left."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._last: dict | None = None
+        self._attempt_id: int | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="train-head")
+        yield PitchBar(id="train-bar")
+        yield Static(id="train-foot")
+
+    def on_resize(self) -> None:
+        """Redraw at the new size.
+
+        The bar is sized from the pane, and the pane learns its size after the
+        first render -- without this it stays at whatever it guessed first.
+        """
+        if self._last is not None:
+            self.show(**self._last)
+
+    def show(
+        self,
+        *,
+        exercise,
+        session,
+        attempt,
+        recording: bool,
+        cents: float | None,
+        scheme: str,
+        drone: bool = False,
+    ) -> None:
+        self._last = dict(
+            exercise=exercise,
+            session=session,
+            attempt=attempt,
+            recording=recording,
+            cents=cents,
+            scheme=scheme,
+            drone=drone,
+        )
+        if not self.query("#train-head"):
+            # Same as CalibrationPane: refreshes can outrun compose().
+            return
+        self._show_head(exercise, session, attempt, scheme)
+        # Fill the pane: the bar is the thing you watch while singing, so it
+        # gets whatever room the terminal can spare, in both directions.
+        bar = self.query_one("#train-bar", PitchBar)
+        if attempt is not None and id(attempt) != self._attempt_id:
+            bar.reset()  # a new go starts on the close-up scale
+        self._attempt_id = id(attempt) if attempt is not None else None
+
+        width = max(20, min(96, self.size.width - 14)) if self.size.width else 34
+        rows = self.size.height - self.HEAD_AND_FOOT_ROWS if self.size.height else 0
+        bar.show(
+            cents if recording else None,
+            attempt.tolerance if attempt else IN_TUNE_CENTS,
+            width,
+            rows or BAR_ROWS,
+        )
+        self._show_foot(session, attempt, recording, cents, scheme, drone)
+
+    def _show_head(self, exercise, session, attempt, scheme) -> None:
+        text = Text()
+        text.append(f"  {exercise.title}", style=f"bold {ACCENT}")
+        text.append(f"   {exercise.detail}\n", style="dim")
+        text.append(f"  note {min(session.index + 1, len(exercise))} of {len(exercise)}",
+                    style="dim")
+        if session.scores:
+            text.append(f"   ·   average {session.average}", style="dim")
+        text.append("\n\n  Sing  ", style="bold")
+        text.append(spell(session.target, scheme), style=f"bold {HIGHLIGHT}")
+        if attempt is not None and attempt.voiced:
+            text.append("   " + "★" * attempt.stars + "☆" * (3 - attempt.stars),
+                        style=HIGHLIGHT)
+        self.query_one("#train-head", Static).update(text)
+
+    def _show_foot(self, session, attempt, recording, cents, scheme, drone) -> None:
+        listen = "l  stop the tone" if drone else "l  hear the note"
+        text = Text()
+        if recording:
+            if cents is None:
+                text.append("  ● listening…\n", style="#f87171")
+            else:
+                near = attempt is not None and abs(cents) <= attempt.tolerance
+                text.append("  ● ", style="#f87171")
+                # Name the note being sung, not only the distance to the target.
+                # "F2" tells you instantly that you are an octave out; "-1200¢"
+                # makes you work it out.
+                text.append(
+                    f"{spell(round(session.target + cents / 100), scheme)}  ",
+                    style="bold green" if near else "bold yellow",
+                )
+                text.append(
+                    f"{cents:+.0f}¢  ", style="bold green" if near else "bold yellow"
+                )
+                if attempt is not None:
+                    held = min(attempt.best_hold, attempt.hold_needed)
+                    text.append(
+                        f"held {held:.1f}s of {attempt.hold_needed:.0f}s\n", style="dim"
+                    )
+            text.append(f"  space  stop   {listen}", style="bold")
+        elif attempt is not None and attempt.voiced:
+            text.append(f"  {attempt.verdict}\n", style="green" if attempt.held else "yellow")
+            text.append(f"  score {attempt.score}", style="bold")
+            sung = spell(attempt.sung_midi, scheme)
+            text.append(
+                f"   ·   you sang {sung}"
+                f"   ·   on the note {attempt.accuracy * 100:.0f}% of the time"
+                f"   ·   wandered {attempt.drift_cents:.0f}¢\n",
+                style="dim",
+            )
+            text.append(f"  space  again   f  next note   {listen}   x  exercise",
+                        style="bold")
+        else:
+            if drone:
+                text.append("  ♪ the note is holding — sing against it\n", style="green")
+                text.append("  space  sing along   l  stop the tone\n", style="bold")
+            else:
+                text.append("  l  hear the note, then space to sing it\n", style="bold")
+            text.append("  f  next note   b  back   x  change exercise", style="dim")
+        self.query_one("#train-foot", Static).update(text)
 
 
 class ProfileScreen(ModalScreen[Profile]):
@@ -1344,7 +1581,10 @@ class Humm2MelodyApp(App):
         padding: 0 1;
     }
     TabPane { padding: 0 1; }
-    #train-body { height: auto; }
+    #training { height: 1fr; padding: 1 2; }
+    #train-head { height: auto; margin-bottom: 1; }
+    #train-bar { height: auto; }
+    #train-foot { height: auto; margin-top: 1; }
     #manual-pane { height: 1fr; }
     #manual { height: auto; }
 
@@ -1380,6 +1620,9 @@ class Humm2MelodyApp(App):
         ("less_than_sign", "slower", "Slower"),
         ("greater_than_sign", "faster", "Faster"),
         ("v", "cycle_voice", "Voice"),
+        ("f", "next_target", "Next note"),
+        ("b", "previous_target", "Back a note"),
+        ("x", "cycle_exercise", "Exercise"),
         ("n", "cycle_notation", "Notation"),
         ("e", "edit_notes", "Edit notes"),
         ("minus", "less_tones", "More hum"),
@@ -1430,6 +1673,13 @@ class Humm2MelodyApp(App):
         # Startup activates the first tab, which would otherwise be recorded
         # as "the tab you were last on" before the remembered one is restored.
         self._tab_ready = False
+        self.exercises = build_exercises()
+        self.exercise_index = 0
+        self.training = TrainingSession(exercise=self.exercises[0])
+        self.attempt: TrainingAttempt | None = None
+        self._seen_frames = 0
+        self.drone_midi: int | None = None
+        self._warned_headphones = False
         self.notation = "english"
         self.editing = False
         self.selected_note: int | None = None
@@ -1490,7 +1740,7 @@ class Humm2MelodyApp(App):
                 yield CalibrationPane(id="calibration")
 
             with TabPane("Training", id="tab-train"):
-                yield Static(_placeholder_training(), id="train-body")
+                yield TrainingPane(id="training")
 
             with TabPane("Manual", id="tab-manual"):
                 with VerticalScroll(id="manual-pane"):
@@ -1568,6 +1818,9 @@ class Humm2MelodyApp(App):
         """Space means "go" on whichever tab is showing."""
         if self._active_tab() == "tab-calibrate":
             self._toggle_calibration()
+            return
+        if self._active_tab() == "tab-train":
+            self._toggle_training()
             return
         if self.recorder.running:
             self._stop_recording()
@@ -1731,6 +1984,8 @@ class Humm2MelodyApp(App):
             piano.light(self._sounding_at(position))
 
     def _stop_playback(self) -> None:
+        was_droning = self.drone_midi is not None
+        self.drone_midi = None
         if self._play_timer is not None:
             self._play_timer.stop()
             self._play_timer = None
@@ -1741,6 +1996,8 @@ class Humm2MelodyApp(App):
             button.label = "♪  Play back"
             button.variant = "primary"
             button.disabled = not self.notes
+        if was_droning:
+            self._refresh_training()
         roll = self._find("#roll", PianoRoll)
         if roll is not None:
             roll.set_playhead(None)
@@ -2268,10 +2525,156 @@ class Humm2MelodyApp(App):
         self._refresh_calibration()
 
     def action_play_reference(self) -> None:
-        """Play the reference tune. The key only applies on the Calibrating tab."""
-        if self._active_tab() != "tab-calibrate":
+        """`l` plays whatever the current tab is asking you to sing."""
+        tab = self._active_tab()
+        if tab == "tab-calibrate":
+            self._play_reference()
+        elif tab == "tab-train":
+            self._play_target()
+
+    # -- training ----------------------------------------------------------
+
+    def _refresh_training(self) -> None:
+        pane = self._find("#training", TrainingPane)
+        if pane is None:
             return
-        self._play_reference()
+        # The tip comes from the attempt, not from the raw live reading: it is
+        # de-spiked there, and the bar has to agree with the score it produces.
+        cents = self.attempt.eased if self.recorder.running and self.attempt else None
+        pane.show(
+            exercise=self.exercises[self.exercise_index],
+            session=self.training,
+            attempt=self.attempt,
+            recording=self.recorder.running,
+            cents=cents,
+            scheme=self.notation,
+            drone=self.drone_midi is not None,
+        )
+
+    def _play_target(self) -> None:
+        """Toggle a held reference tone on the target note.
+
+        It keeps sounding until you press `l` again or leave the tab, so you
+        can hum against it rather than from memory -- which is a different and
+        much easier exercise, and the one worth practising first.
+        """
+        if self.drone_midi is not None:
+            self._stop_drone()
+            self._set_hint("Reference tone off.")
+            return
+        self._start_drone(self.training.target)
+
+    def _start_drone(self, midi: int) -> None:
+        try:
+            self.player.play_audio(drone(midi, self.player.sample_rate), loop=True)
+        except Exception as exc:  # a missing output device, most likely
+            self._set_hint(Text(f"Could not play audio: {exc}", style="bold red"))
+            return
+        self.drone_midi = midi
+        note = spell(midi, self.notation)
+        if self._warned_headphones:
+            self._set_hint(f"{note} holding — l stops it.")
+        else:
+            # Said once. Without headphones the mic hears the tone and scores
+            # it as if you had sung it, which makes the whole tab a lie.
+            self._warned_headphones = True
+            self._set_hint(
+                f"{note} holding — l stops it. Wear headphones, or the "
+                "microphone will hear the tone and score it as you."
+            )
+        self._refresh_training()
+
+    def _stop_drone(self) -> None:
+        if self.drone_midi is None:
+            return
+        self.drone_midi = None
+        self.player.stop()
+        self._refresh_training()
+
+    def _retune_drone(self) -> None:
+        """Follow the target when it moves, rather than droning the old note."""
+        if self.drone_midi is not None and self.drone_midi != self.training.target:
+            self._start_drone(self.training.target)
+
+    def _toggle_training(self) -> None:
+        if self.recorder.running:
+            self._finish_training_attempt()
+        else:
+            self._start_training_attempt()
+
+    def _start_training_attempt(self) -> None:
+        if self.drone_midi is None:
+            self._stop_playback()  # but a reference tone plays on, deliberately
+        # The detector searches the singer's whole range here, not a window
+        # around the target. Narrowing it looks tempting -- it would rule out
+        # the octave -- but a voice outside the window cannot be reported at
+        # all, only mis-reported at whatever the nearest edge is. Someone whose
+        # pitch is far off is exactly who this tab is for, so the window has to
+        # contain wherever they actually are.
+        try:
+            self.recorder.start()
+        except AudioError as exc:
+            self._set_hint(
+                Text(f"Could not open the microphone: {exc}", style="bold red")
+            )
+            return
+        self.attempt = TrainingAttempt(target=self.training.target)
+        self._seen_frames = 0
+        self._record_timer = self.set_interval(1 / 15, self._tick_training)
+        self._refresh_training()
+
+    def _tick_training(self) -> None:
+        """Score the frames that have arrived since the last tick."""
+        if self.attempt is None:
+            return
+        frames = self.recorder.frames()
+        for frame in frames[self._seen_frames :]:
+            self.attempt.feed(frame)
+        self._seen_frames = len(frames)
+        self._refresh_training()
+
+    def _finish_training_attempt(self) -> None:
+        if self._record_timer is not None:
+            self._record_timer.stop()
+            self._record_timer = None
+        frames = self.recorder.stop()
+        if self.attempt is not None:
+            for frame in frames[self._seen_frames :]:
+                self.attempt.feed(frame)
+            self.training.record(self.attempt)
+        self._refresh_training()
+
+    def action_next_target(self) -> None:
+        if self._active_tab() != "tab-train" or self.recorder.running:
+            return
+        self.training.advance()
+        if self.training.finished:
+            self.training.index = len(self.exercises[self.exercise_index]) - 1
+            self._set_hint(
+                f"Exercise done — average {self.training.average}. "
+                "Press x for the next one."
+            )
+        self.attempt = None
+        self._retune_drone()
+        self._refresh_training()
+
+    def action_previous_target(self) -> None:
+        if self._active_tab() != "tab-train" or self.recorder.running:
+            return
+        self.training.back()
+        self.attempt = None
+        self._retune_drone()
+        self._refresh_training()
+
+    def action_cycle_exercise(self) -> None:
+        if self._active_tab() != "tab-train" or self.recorder.running:
+            return
+        self.exercise_index = (self.exercise_index + 1) % len(self.exercises)
+        self.training = TrainingSession(exercise=self.exercises[self.exercise_index])
+        self.attempt = None
+        self._retune_drone()
+        self._refresh_training()
+        self._set_hint(self.exercises[self.exercise_index].detail)
 
     def _play_reference(self) -> None:
         """Play the tune the user is being asked to sing back.
@@ -2324,6 +2727,11 @@ class Humm2MelodyApp(App):
         self.voice = profile.voice
         self.notation = profile.notation
         self._apply_calibrated_detection(profile)
+        self.exercises = build_exercises(profile)
+        self.exercise_index = min(self.exercise_index, len(self.exercises) - 1)
+        self.training = TrainingSession(exercise=self.exercises[self.exercise_index])
+        self.attempt = None
+        self._refresh_training()
         self.sub_title = f"{profile.name} · hum a melody, get the keyboard notes"
 
         for selector, kind, value in (
@@ -2378,6 +2786,13 @@ class Humm2MelodyApp(App):
         if not self._tab_ready:
             return
         active = self._active_tab()
+        if active != "tab-train":
+            # Walking away mid-note: end the attempt rather than leave the mic
+            # open and the detector still narrowed to a note nobody is singing,
+            # and silence the reference tone rather than drone over another tab.
+            if self.attempt is not None and self.recorder.running:
+                self._finish_training_attempt()
+            self._stop_drone()
         if not active or self.profile.last_tab == active:
             return
         self.profile.last_tab = active

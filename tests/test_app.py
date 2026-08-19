@@ -76,6 +76,10 @@ class FakeRecorder:
         self.running = False
         return self._frames
 
+    def frames(self):
+        """The real recorder hands out what has arrived so far."""
+        return list(self._frames) if self.running else []
+
     def audio(self):
         return self._audio
 
@@ -89,6 +93,7 @@ class FakePlayer:
         self.position = 0.0
         self.played: list[Note] | None = None
         self.buffer = None
+        self.looping = False
         self.sample_rate = SR
         self.speed = 1.0
         self.voice = "pure"
@@ -100,14 +105,16 @@ class FakePlayer:
         self.playing = True
         self.position = 0.0
 
-    def play_audio(self, buffer, rate=None):
+    def play_audio(self, buffer, rate=None, loop=False):
         self.buffer = buffer
         self.sample_rate = rate or SR
+        self.looping = loop
         self.playing = True
         self.position = 0.0
 
     def stop(self):
         self.playing = False
+        self.looping = False
         self.position = 0.0
 
 
@@ -860,9 +867,9 @@ async def test_the_other_tabs_explain_themselves(tmp_path: Path):
     app = make_app(tmp_path)
     async with app.run_test():
         calibrate = str(app.query_one("#cal-title", Static).content)
-        train = str(app.query_one("#train-body", Static).content)
+        train = str(app.query_one("#train-head", Static).content)
         assert "Teach the app your voice" in calibrate
-        assert "Training" in train and "Not built yet" in train
+        assert "Sing" in train
 
 
 # -- profiles --------------------------------------------------------------
