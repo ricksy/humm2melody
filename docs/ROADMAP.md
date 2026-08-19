@@ -1,21 +1,44 @@
 # Outstanding work
 
-Features discussed but not built, plus known limitations. Ordered roughly by
-value. Each entry says what it is, why it matters, and what is already in place
-— the last part matters most, because several of these are smaller than they
-look.
+Features discussed but not built, plus known limitations. Each entry says what
+it is, why it matters, and what is already in place — the last part matters
+most, because several of these are smaller than they look.
 
 Written to be picked up cold: assume the reader has not seen the conversation
 that produced them.
+
+## Status at v0.6.0
+
+| # | Item | State |
+| --- | --- | --- |
+| 0 | Calibrating and Training tabs | **scaffolded** — tabs and profiles exist, content pending |
+| 1 | Per-user vocal calibration | not started — unblocked, this is the next one |
+| 2 | Training mode | not started — needs design decisions more than code |
+| 3 | Refresh the blog post | **stale** — the post still describes v0.1 |
+| 4 | Rhythm and quantisation | not started — the hard half already exists |
+| 5 | Compressed audio storage | **done in v0.6.0** |
+| 6 | MIDI / MusicXML export | not started — small and self-contained |
+| 7 | Key detection and transposition | not started — the logic exists, unsurfaced |
+| 8 | Smaller items | mixed, see below |
+
+Shipped since this file was written: profiles and tabs (v0.5.0), FLAC and MP3
+storage (v0.6.0), and a fix for the `analyze` command's defaults having drifted
+out of sync with the app.
+
+**Recommended next:** item 1. It is unblocked now that profiles exist, it is the
+principled version of two recalibrations already done by hand, and item 2
+depends on it for what "correct" means.
 
 ---
 
 ## 0. Fill in the Calibrating and Training tabs
 
-Both tabs exist and are placeholders. The app now has profiles, so there is
-somewhere to put what calibration learns — `Profile.calibration` is defined and
-persisted, with every field currently `None`. Items 1 and 2 are the content for
-those two tabs.
+**Scaffolding is done.** Both tabs exist, each with a placeholder explaining
+what it is for. Profiles exist and are chosen at startup, so there is somewhere
+to put what calibration learns: `Profile.calibration` is defined and persisted,
+with every field currently `None`. Runs record which profile made them.
+
+What remains is the content, which is items 1 and 2.
 
 ---
 
