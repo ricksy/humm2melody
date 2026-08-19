@@ -12,8 +12,8 @@ Require vhs
 
 Set Shell "bash"
 Set FontSize 13
-Set Width 940
-Set Height 700
+Set Width 1200
+Set Height 900
 Set Padding 14
 Set Framerate 12
 Set TypingSpeed 45ms

@@ -1,6 +1,6 @@
 [project]
 name = "humm2melody"
-version = "0.13.2"
+version = "0.14.0"
 description = "Hum a melody into your microphone and get the notes to play on a keyboard."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,6 +28,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["humm2melody"]
+artifacts = ["humm2melody/manual.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

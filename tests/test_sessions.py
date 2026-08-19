@@ -517,3 +517,230 @@ def test_audio_round_trip_clips_instead_of_wrapping(tmp_path: Path):
     restored, _ = read_audio(tmp_path / "loud.flac")
     assert restored[0] > 0.99
     assert restored[1] < -0.99
+
+
+# -- damaged runs ----------------------------------------------------------
+
+
+def write_manifest(root: Path, name: str, payload) -> Path:
+    run = root / name
+    run.mkdir(parents=True)
+    (run / MANIFEST).write_text(json.dumps(payload))
+    return run
+
+
+def test_a_directory_without_a_manifest_is_not_a_run(tmp_path: Path):
+    (tmp_path / "notes").mkdir()
+    (tmp_path / "notes" / "scribble.txt").write_text("not a run")
+    assert SessionStore(tmp_path).load(tmp_path / "notes") is None
+
+
+def test_a_manifest_that_is_a_directory_is_not_a_run(tmp_path: Path):
+    (tmp_path / "run" / MANIFEST).mkdir(parents=True)
+    assert SessionStore(tmp_path).load(tmp_path / "run") is None
+
+
+def test_a_truncated_manifest_is_skipped(tmp_path: Path):
+    """Interrupted mid-write, the JSON stops in the middle of a note."""
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / MANIFEST).write_text('{"timestamp": "2026-08-19T14:32:05", "notes": [{"mi')
+    store = SessionStore(tmp_path)
+
+    assert store.load(run) is None
+    assert store.list() == []
+
+
+def test_a_run_whose_timestamp_is_nonsense_falls_back_to_the_file_time(
+    tmp_path: Path,
+):
+    run = write_manifest(tmp_path, "run", {"timestamp": "not a date", "notes": []})
+    session = SessionStore(tmp_path).load(run)
+
+    assert session is not None
+    assert session.timestamp.year >= 2020
+
+
+def test_a_run_with_no_timestamp_still_loads(tmp_path: Path):
+    run = write_manifest(tmp_path, "run", {"label": "no clock", "notes": []})
+    session = SessionStore(tmp_path).load(run)
+
+    assert session is not None
+    assert session.label == "no clock"
+
+
+def test_one_damaged_run_does_not_hide_the_healthy_ones(tmp_path: Path):
+    store = SessionStore(tmp_path)
+    good = save_one(store, when=datetime(2026, 8, 19, 10, 0, 0))
+    broken = tmp_path / "2026-08-19_11-00-00"
+    broken.mkdir()
+    (broken / MANIFEST).write_text("{oh no")
+
+    assert [s.path for s in store.list()] == [good.path]
+
+
+def test_a_pitch_track_that_is_missing_reads_as_no_frames(tmp_path: Path):
+    from humm2melody.sessions import read_pitch_track
+
+    assert read_pitch_track(tmp_path / "nothing.csv") == []
+
+
+def test_a_pitch_track_with_the_wrong_columns_reads_as_no_frames(tmp_path: Path):
+    """Better no frames than frames invented from the wrong columns."""
+    from humm2melody.sessions import read_pitch_track
+
+    path = tmp_path / PITCH_CSV
+    path.write_text("t,hz\n0.0,440.0\n")
+    assert read_pitch_track(path) == []
+
+
+def test_a_pitch_track_with_a_corrupt_row_reads_as_no_frames(tmp_path: Path):
+    from humm2melody.sessions import read_pitch_track
+
+    path = tmp_path / PITCH_CSV
+    path.write_text("time,freq,confidence,rms\n0.0,440.0,0.9,0.1\n0.02,oops,0.9,0.1\n")
+    assert read_pitch_track(path) == []
+
+
+def test_a_pitch_track_with_only_a_header_reads_as_no_frames(tmp_path: Path):
+    from humm2melody.sessions import read_pitch_track
+
+    path = tmp_path / PITCH_CSV
+    path.write_text("time,freq,confidence,rms\n")
+    assert read_pitch_track(path) == []
+
+
+def test_a_run_whose_audio_was_removed_still_lists(tmp_path: Path):
+    """The manifest is the run; the audio going missing must not hide it."""
+    store = SessionStore(tmp_path)
+    session = save_one(store)
+    (session.path / HUM_AUDIO).unlink()
+
+    assert len(store.list()) == 1
+    assert not session.hum_path.is_file()
+
+
+def test_reading_a_file_that_is_not_audio_raises(tmp_path: Path):
+    """The app guards this call; the guard has to have something to catch."""
+    path = tmp_path / "hum.flac"
+    path.write_text("not audio at all")
+    with pytest.raises(Exception):
+        read_audio(path)
+
+
+def test_saving_into_a_path_that_is_a_file_raises_an_os_error(tmp_path: Path):
+    """The app catches OSError around save; anything else would escape it."""
+    blocked = tmp_path / "runs"
+    blocked.write_text("in the way")
+    store = SessionStore(blocked)
+
+    with pytest.raises(OSError):
+        save_one(store)
+
+
+def test_updating_a_run_that_was_deleted_raises_an_os_error(tmp_path: Path):
+    import shutil
+
+    store = SessionStore(tmp_path)
+    session = save_one(store)
+    shutil.rmtree(session.path)
+
+    with pytest.raises(OSError):
+        store.update_notes(session, sample_notes())
+
+
+def test_two_runs_renamed_to_the_same_label_both_survive(tmp_path: Path):
+    store = SessionStore(tmp_path)
+    first = save_one(store, when=datetime(2026, 8, 19, 10, 0, 0))
+    second = save_one(store, when=datetime(2026, 8, 19, 10, 0, 0))
+    store.rename(first, "Take")
+    store.rename(second, "Take")
+
+    assert first.path != second.path
+    assert first.path.is_dir() and second.path.is_dir()
+    assert len(store.list()) == 2
+
+
+def test_a_label_that_reduces_to_nothing_leaves_no_slug_behind(tmp_path: Path):
+    """"!!!" is a name on screen, but there is nothing safe to put in a path."""
+    from humm2melody.sessions import LABEL_SEPARATOR
+
+    store = SessionStore(tmp_path)
+    session = save_one(store, when=datetime(2026, 8, 19, 14, 32, 5))
+    store.rename(session, "!!!???")
+
+    assert LABEL_SEPARATOR not in session.path.name
+    assert session.path.is_dir()
+    assert store.list()[0].display_name == "!!!???"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "_unique_dir treats the run's own directory as a collision, so "
+        "renaming a run to the label it already has moves it to a '-2' "
+        "suffix rather than leaving it alone"
+    ),
+)
+def test_renaming_a_run_to_its_own_label_leaves_it_where_it_is(tmp_path: Path):
+    store = SessionStore(tmp_path)
+    session = save_one(store, when=datetime(2026, 8, 19, 14, 32, 5))
+    store.rename(session, "Chorus")
+    settled = session.path
+
+    store.rename(session, "Chorus")
+    assert session.path == settled
+
+
+def test_a_run_saved_with_no_audio_reports_no_duration(tmp_path: Path):
+    store = SessionStore(tmp_path)
+    session = store.save(
+        audio=np.zeros(0, dtype=np.float32),
+        sample_rate=SR,
+        frames=[],
+        notes=[],
+    )
+    assert session.duration == 0.0
+    assert store.list()[0].duration == 0.0
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "SessionStore.load indexes the manifest without checking it is an "
+        "object, so a file holding a JSON list, string or null raises "
+        "TypeError -- and it escapes list(), so one damaged run makes every "
+        "saved run unreachable"
+    ),
+)
+@pytest.mark.parametrize("payload", [[], "hello", None, 7])
+def test_a_manifest_that_is_not_an_object_is_skipped(tmp_path: Path, payload):
+    run = write_manifest(tmp_path, "run", payload)
+    store = SessionStore(tmp_path)
+
+    assert store.load(run) is None
+    assert store.list() == []
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "a note entry missing a field raises KeyError out of load(), and a "
+        "field of the wrong type raises ValueError; both escape list() and "
+        "take the whole run sidebar with them"
+    ),
+)
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"timestamp": "2026-08-19T14:32:05", "notes": [{"start": 0.0}]},
+        {"timestamp": "2026-08-19T14:32:05", "duration": "long", "notes": []},
+        {"timestamp": "2026-08-19T14:32:05", "notes": [{"midi": None}]},
+    ],
+)
+def test_a_partially_written_manifest_is_skipped(tmp_path: Path, payload):
+    run = write_manifest(tmp_path, "run", payload)
+    store = SessionStore(tmp_path)
+
+    assert store.load(run) is None
+    assert store.list() == []

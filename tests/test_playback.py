@@ -314,3 +314,167 @@ def test_an_unknown_voice_is_survivable():
 
     assert next_voice("nonsense") == "pure"
     assert render([note(60, 0, 0.4)], SR, voice="nonsense").size > 0
+
+
+# -- picking a chord out of the melody itself ------------------------------
+
+
+def test_each_note_gets_the_third_its_own_pitch_class_asks_for():
+    """A minor tune is not minor under every root: A minor makes C major."""
+    from humm2melody.playback import chord_offsets
+
+    melody = [note(69, 0, 0.3), note(72, 0.4, 0.7), note(76, 0.8, 1.1)]
+    stacks = chord_offsets(melody, "chord")
+    assert stacks[69] == (3, 7)  # A: C is its minor third
+    assert stacks[72] == (4, 7)  # C: E is its major third
+
+
+def test_an_ambiguous_melody_takes_the_major_third():
+    """Both thirds sung against the same root: major is the safer guess."""
+    from humm2melody.playback import chord_offsets
+
+    melody = [note(60, 0, 0.3), note(63, 0.4, 0.7), note(64, 0.8, 1.1)]
+    assert chord_offsets(melody, "chord")[60] == (4, 7)
+
+
+def test_an_atonal_melody_still_produces_a_chord_for_every_note():
+    """A chromatic run makes both thirds available to every root."""
+    from humm2melody.playback import chord_offsets
+
+    melody = [note(60 + i, i * 0.2, i * 0.2 + 0.15) for i in range(12)]
+    stacks = chord_offsets(melody, "chord")
+    assert len(stacks) == 12
+    assert {offsets for offsets in stacks.values()} == {(4, 7)}
+
+
+def test_a_single_note_melody_is_harmonised_major():
+    """One note cannot say major or minor, and silence is not an option."""
+    from humm2melody.playback import chord_offsets
+
+    assert chord_offsets([note(65, 0, 0.5)], "chord") == {65: (4, 7)}
+
+
+def test_the_third_is_taken_from_any_octave():
+    """Pitch class, not interval: an E two octaves up still makes C major."""
+    from humm2melody.playback import chord_offsets
+
+    melody = [note(60, 0, 0.3), note(88, 0.4, 0.7)]  # C4 then E6
+    assert chord_offsets(melody, "chord")[60] == (4, 7)
+
+
+def test_the_same_note_in_two_octaves_gets_the_same_chord():
+    from humm2melody.playback import chord_offsets
+
+    melody = [note(60, 0, 0.3), note(63, 0.4, 0.7), note(72, 0.8, 1.1)]
+    stacks = chord_offsets(melody, "chord")
+    assert stacks[60] == stacks[72] == (3, 7)
+
+
+def test_nothing_is_stacked_on_an_empty_melody():
+    from humm2melody.playback import VOICES, chord_offsets
+
+    for voice in VOICES:
+        assert chord_offsets([], voice) == {}
+
+
+def test_a_chord_voice_sounds_the_third_it_chose():
+    """The chosen third has to reach the audio, not just the offsets table."""
+    from humm2melody.pitch import midi_to_hz
+    from humm2melody.playback import render
+
+    minor = [note(60, 0, 0.6), note(63, 0.7, 1.2)]
+    audio = render(minor, SR, voice="chord")[: 2**14]
+    spectrum = np.abs(np.fft.rfft(audio))
+    freqs = np.fft.rfftfreq(2**14, 1 / SR)
+
+    def energy_at(hz: float) -> float:
+        return spectrum[(freqs > hz * 0.98) & (freqs < hz * 1.02)].max()
+
+    assert energy_at(midi_to_hz(63)) > energy_at(midi_to_hz(64)) * 3
+
+
+def test_a_note_at_the_top_of_the_range_does_not_break_a_stacked_voice():
+    """Stacking an octave on MIDI 127 asks for a partial past Nyquist."""
+    from humm2melody.playback import render
+
+    audio = render([note(127, 0.0, 0.3)], SR, voice="rich")
+    assert audio.size > 0
+    assert np.all(np.isfinite(audio))
+    assert np.max(np.abs(audio)) <= 1.0
+
+
+def test_a_note_at_the_bottom_of_the_range_still_renders():
+    from humm2melody.playback import render
+
+    audio = render([note(0, 0.0, 0.5)], SR, voice="chord")
+    assert audio.size > 0
+    assert np.all(np.isfinite(audio))
+
+
+def test_the_voice_reaches_the_hum_overlay():
+    """The overlay renders its own tones, so the setting has to be passed on."""
+    from humm2melody.playback import mix_hum_with_tones
+
+    hum = (0.2 * np.sin(np.arange(SR) * 0.05)).astype(np.float32)
+    melody = [note(60, 0.0, 0.5)]
+    plain = mix_hum_with_tones(hum, SR, melody, SR, voice="pure")
+    stacked = mix_hum_with_tones(hum, SR, melody, SR, voice="rich")
+
+    assert not np.allclose(plain, stacked)
+
+
+# -- playing slower or faster ----------------------------------------------
+
+
+def test_half_speed_takes_twice_as_long():
+    from humm2melody.playback import render
+
+    melody = [note(60, 0.0, 0.4), note(64, 0.5, 0.9)]
+    normal = render(melody, SR).size - int(TAIL * SR)
+    slow = render(melody, SR, speed=0.5).size - int(TAIL * SR)
+    assert slow == pytest.approx(normal * 2, rel=0.02)
+
+
+def test_slowing_a_melody_down_does_not_transpose_it():
+    """The point of a tempo dial: half speed to learn it, same notes."""
+    from humm2melody.playback import render
+
+    melody = [note(60, 0.0, 0.4), note(64, 0.55, 0.95), note(67, 1.1, 1.5)]
+    detected = segment_notes(analyse(render(melody, SR, speed=0.5), SR))
+    assert [n.name for n in detected] == ["C4", "E4", "G4"]
+
+
+def test_speeding_a_melody_up_does_not_transpose_it():
+    from humm2melody.playback import render
+
+    melody = [note(60, 0.0, 0.5), note(64, 0.7, 1.2), note(67, 1.4, 1.9)]
+    detected = segment_notes(analyse(render(melody, SR, speed=1.7), SR))
+    assert [n.name for n in detected] == ["C4", "E4", "G4"]
+
+
+def test_tempo_levels_run_from_half_speed_to_double():
+    from humm2melody.playback import TEMPO_DEFAULT, tempo_speed
+
+    speeds = [tempo_speed(level) for level in range(1, 10)]
+    assert speeds == sorted(speeds)
+    assert speeds[0] == pytest.approx(0.5)
+    assert speeds[-1] == pytest.approx(2.0)
+    assert tempo_speed(TEMPO_DEFAULT) == pytest.approx(1.0)
+
+
+def test_a_tempo_outside_the_dial_is_clamped():
+    from humm2melody.playback import tempo_speed
+
+    assert tempo_speed(-5) == tempo_speed(1)
+    assert tempo_speed(99) == tempo_speed(9)
+
+
+def test_speed_keeps_the_gaps_between_notes_silent():
+    """Gaps have to scale with the notes, or the melody stops being the melody."""
+    from humm2melody.playback import render
+
+    melody = [note(60, 0.0, 0.4), note(64, 1.0, 1.4)]
+    audio = render(melody, SR, speed=0.5)
+    # The gap at 0.4-1.0s becomes 0.8-2.0s at half speed.
+    quiet = audio[int(1.0 * SR) : int(1.8 * SR)]
+    assert np.max(np.abs(quiet)) < 0.01

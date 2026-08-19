@@ -9,10 +9,10 @@ Require vhs
 
 Set Shell "bash"
 Set FontSize 13
-Set Width 940
-Set Height 700
+Set Width 1200
+Set Height 900
 Set Padding 14
-Set Framerate 12
+Set Framerate 10
 Set TypingSpeed 45ms
 
 # Seed a few past runs off-camera so the sidebar has something in it.

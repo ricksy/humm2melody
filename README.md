@@ -29,6 +29,12 @@ failed transcription is exactly the one you want to inspect later.
 > that it transcribed some humming into a laptop microphone correctly. Read it
 > yourself before you put it anywhere that matters.
 
+## User manual
+
+[**humm2melody user manual**](humm2melody/manual.md) covers every feature in
+task order. The same text is in the app's **Manual** tab, so there is one
+manual rather than one per place you read it.
+
 ## Requirements
 
 - macOS or Linux, Python 3.11 or later

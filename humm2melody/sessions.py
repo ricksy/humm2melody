@@ -127,6 +127,8 @@ class Session:
     duration: float = 0.0
     sample_rate: int = 0
     starred: bool = False
+    edited: bool = False
+    """Set once the notes were changed by hand, so a reload does not undo them."""
     profile: str = ""  # who recorded it; empty for guest
 
     @property
@@ -245,6 +247,7 @@ class SessionStore:
             "timestamp": session.timestamp.isoformat(timespec="seconds"),
             "label": session.label,
             "starred": session.starred,
+            "edited": session.edited,
             "profile": session.profile,
             "duration": round(session.duration, 4),
             "sample_rate": session.sample_rate,
@@ -305,6 +308,7 @@ class SessionStore:
             timestamp=timestamp,
             label=str(data.get("label", "")),
             starred=bool(data.get("starred", False)),
+            edited=bool(data.get("edited", False)),
             profile=str(data.get("profile", "")),
             notes=notes,
             duration=float(data.get("duration", 0.0)),
@@ -353,7 +357,9 @@ class SessionStore:
         self._write_manifest(session)
         return session
 
-    def update_notes(self, session: Session, notes: list[Note]) -> Session:
+    def update_notes(
+        self, session: Session, notes: list[Note], edited: bool = True
+    ) -> Session:
         """Rewrite a run's notes after they were edited by hand.
 
         The pitch track and the hum are left untouched: they are what was
@@ -364,6 +370,7 @@ class SessionStore:
         if not self._owns(session):
             raise ValueError(f"{session.path} is not inside {self.root}")
         session.notes = list(notes)
+        session.edited = edited
         self._write_manifest(session)
         write_audio(
             session.path / PLAYBACK_AUDIO, render(session.notes, PLAYBACK_RATE),

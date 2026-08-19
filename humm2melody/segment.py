@@ -398,8 +398,19 @@ def _merge_adjacent(
             blended = (
                 prev.freq * prev.duration + note.freq * note.duration
             ) / total
+            # Carry the continuous pitch through. Dropping it made a merged
+            # note fall back to its own snapped MIDI and report as exactly in
+            # tune, which biased calibration's accuracy figure optimistically
+            # and made the dial search prefer settings that merged more.
+            pitches = [n.pitch or hz_to_midi(n.freq) for n in (prev, note)]
+            blended_pitch = (
+                pitches[0] * prev.duration + pitches[1] * note.duration
+            ) / total
             merged[-1] = Note(
                 midi=prev.midi if note.midi == prev.midi else round(hz_to_midi(blended)),
+                pitch=blended_pitch,
+                # A merged note still began where the first one did.
+                attack=prev.attack,
                 start=prev.start,
                 end=note.end,
                 freq=(prev.freq * prev.duration + note.freq * note.duration) / total,

@@ -19,6 +19,7 @@ from textual.widgets import (
     Label,
     ListItem,
     ListView,
+    Markdown,
     Static,
     TabbedContent,
     TabPane,
@@ -65,7 +66,7 @@ from .sessions import (
     read_wav,
 )
 
-TAB_IDS = ("tab-record", "tab-calibrate", "tab-train")
+TAB_IDS = ("tab-record", "tab-calibrate", "tab-train", "tab-manual")
 DEFAULT_TAB = TAB_IDS[0]
 
 MAX_ROLL_ROWS = 32
@@ -377,12 +378,19 @@ class PianoRoll(Static):
         self.refresh_roll()
 
     def _playhead_column(self) -> int | None:
-        if self._playhead is None or not self._notes:
+        """Which column the playhead falls in, in the geometry last drawn.
+
+        It must use the *drawn* width, not a guess at it. Computing the width
+        independently made the guard compare two different numbers, so it
+        redrew on ticks where the playhead had not moved and skipped ticks
+        where it had -- a full redraw thirty times a second, competing with
+        the audio worker for the interpreter.
+        """
+        if self._playhead is None or self._geometry is None:
             return None
-        span = max(n.end for n in self._notes)
+        _, _, _, width, span = self._geometry
         if span <= 0:
             return None
-        width = max(20, self.size.width - 6)
         return min(width - 1, int(self._playhead / span * width))
 
     def on_resize(self) -> None:
@@ -896,6 +904,25 @@ class CalibrationPane(Vertical):
         body.update(text)
 
 
+MANUAL_PATH = Path(__file__).with_name("manual.md")
+
+
+def _manual_text() -> str:
+    """The user manual, shipped beside the code so both stay in step.
+
+    The same file renders on GitHub, so there is one manual rather than one
+    per place it is read.
+    """
+    try:
+        return MANUAL_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return (
+            "# Manual unavailable\n\n"
+            f"Could not read `{MANUAL_PATH.name}`. It should sit beside the "
+            "package. The same text is in the repository."
+        )
+
+
 def _placeholder_training() -> Text:
     text = Text()
     text.append("\n  Training\n\n", style="bold")
@@ -1286,14 +1313,18 @@ class Humm2MelodyApp(App):
     LevelMeter { height: 1; margin-top: 1; }
     #hint { height: 1; margin-top: 1; color: $text-muted; }
 
-    #notes-row { height: 1fr; min-height: 8; }
+    /* Three stacked buttons are nine rows; the row must never be shorter. */
+    #notes-row { height: 1fr; min-height: 9; }
     /* A fixed width: a scroll container cannot size itself to its content,
        and `auto` collapses it to a sliver. Wide enough for the longest note
        spelling any notation produces. */
-    #detail-pane { width: 58; height: 1fr; scrollbar-size-vertical: 1; }
+    #detail-pane { width: 54; height: 1fr; scrollbar-size-vertical: 1; }
     #detail { width: auto; height: auto; }
-    #controls { width: 1fr; height: auto; padding-left: 3; }
-    #controls Button { width: 18; min-width: 18; margin-right: 2; }
+    /* Stacked, not in a row: three buttons plus the table do not fit side by
+       side on a narrow terminal, and the row clipped the last one off. Beside
+       the table this costs no extra height, since that pane is already tall. */
+    #controls { width: auto; height: auto; padding-left: 3; }
+    #controls Button { width: 20; min-width: 20; }
     #sensitivity { height: 1; margin: 1 2 0 2; }
     #pause { height: 1; margin: 0 2 0 2; }
     #mix { height: 1; margin: 0 2 0 2; }
@@ -1303,7 +1334,8 @@ class Humm2MelodyApp(App):
 
     #main { height: 1fr; margin: 1 2; }
     #results { width: 1fr; height: 1fr; }
-    #roll { height: auto; margin-bottom: 1; }
+    #roll-pane { height: auto; max-height: 12; margin-bottom: 1; }
+    #roll { height: auto; }
     #sequence { height: auto; margin-bottom: 1; }
 
     #sidebar {
@@ -1313,6 +1345,8 @@ class Humm2MelodyApp(App):
     }
     TabPane { padding: 0 1; }
     #train-body { height: auto; }
+    #manual-pane { height: 1fr; }
+    #manual { height: auto; }
 
     #calibration { height: auto; padding: 1 2; }
     #cal-title { height: auto; margin-bottom: 1; }
@@ -1421,7 +1455,12 @@ class Humm2MelodyApp(App):
                 yield NotationRow(id="notation")
                 with Horizontal(id="main"):
                     with VerticalScroll(id="results"):
-                        yield PianoRoll(id="roll")
+                        # The roll grows a row per semitone, so a melody
+                        # spanning several octaves used to push everything
+                        # below it off the screen. It scrolls inside itself
+                        # instead, like the note table.
+                        with VerticalScroll(id="roll-pane"):
+                            yield PianoRoll(id="roll")
                         yield MelodySequence(id="sequence")
                         yield PianoKeys(id="piano")
                         # Beside the table rather than above everything: the
@@ -1432,7 +1471,7 @@ class Humm2MelodyApp(App):
                             # bottom of the terminal.
                             with VerticalScroll(id="detail-pane"):
                                 yield DetailTable(id="detail")
-                            with Horizontal(id="controls"):
+                            with Vertical(id="controls"):
                                 yield ActionButton(
                                     "▶  Start humming", variant="success", id="toggle"
                                 )
@@ -1452,6 +1491,10 @@ class Humm2MelodyApp(App):
 
             with TabPane("Training", id="tab-train"):
                 yield Static(_placeholder_training(), id="train-body")
+
+            with TabPane("Manual", id="tab-manual"):
+                with VerticalScroll(id="manual-pane"):
+                    yield Markdown(_manual_text(), id="manual")
 
         # A second footer: what the app is hearing and what to do next, kept
         # visible on every tab rather than only while recording.
@@ -1765,7 +1808,12 @@ class Humm2MelodyApp(App):
                 self.audio, self.audio_rate = read_wav(session.hum_path)
             except Exception:
                 self.audio, self.audio_rate = None, 0
-        if self.frames:
+        if session.edited:
+            # Re-segmenting would silently undo work done by hand. The dials
+            # can still be turned afterwards; that is an explicit choice to
+            # read the recording again, and it clears the edited mark.
+            self.notes = list(session.notes)
+        elif self.frames:
             self.notes = self._segment(self.frames)
         else:
             self.notes = list(session.notes)
@@ -2530,7 +2578,17 @@ class Humm2MelodyApp(App):
         )
 
     def _resegment(self) -> None:
+        """Read the recording again at the current dial settings.
+
+        This deliberately replaces hand edits: turning a dial is a request to
+        re-read the audio, so the run stops counting as edited.
+        """
         self.notes = self._segment(self.frames)
+        if self.current_session is not None and self.current_session.edited:
+            try:
+                self.store.update_notes(self.current_session, self.notes, edited=False)
+            except (OSError, ValueError):
+                pass
         self._show_notes(self.notes)
 
     # -- comparison --------------------------------------------------------

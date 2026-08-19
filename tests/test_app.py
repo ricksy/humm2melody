@@ -17,8 +17,10 @@ from humm2melody.profiles import Profile, ProfileStore, guest
 from humm2melody.segment import Note
 from humm2melody.sessions import HUM_AUDIO, MANIFEST, PITCH_CSV, PLAYBACK_AUDIO
 from humm2melody.tui import (
+    ConfirmScreen,
     Humm2MelodyApp,
     MelodySequence,
+    NameScreen,
     PianoRoll,
     ProfileScreen,
 )
@@ -522,7 +524,8 @@ async def test_rename_and_delete_do_nothing_without_a_selection(tmp_path: Path):
         await pilot.press("d")
         await pilot.pause()
         # No modal should have opened, and nothing should have blown up.
-        assert isinstance(app.screen, type(app.screen))
+        assert app.screen_stack == [app.screen_stack[0]]
+        assert not app.query(ConfirmScreen) and not app.query(NameScreen)
         assert app.sessions == []
 
 
@@ -831,11 +834,11 @@ async def test_overlay_uses_the_chosen_balance(tmp_path: Path):
 # -- tabs ------------------------------------------------------------------
 
 
-async def test_the_ui_lives_in_three_tabs(tmp_path: Path):
+async def test_the_ui_lives_in_four_tabs(tmp_path: Path):
     app = make_app(tmp_path)
     async with app.run_test():
         panes = [p.id for p in app.query(TabPane)]
-        assert panes == ["tab-record", "tab-calibrate", "tab-train"]
+        assert panes == ["tab-record", "tab-calibrate", "tab-train", "tab-manual"]
 
 
 async def test_recording_is_the_active_tab_on_startup(tmp_path: Path):

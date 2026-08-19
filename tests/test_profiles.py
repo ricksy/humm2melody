@@ -195,3 +195,161 @@ def test_deleting_a_profile_does_not_touch_recordings(tmp_path: Path):
 
     store.delete(store.create("Ahmed"))
     assert (recordings / "keep.txt").exists()
+
+
+# -- profiles the app did not write ----------------------------------------
+
+
+def write_profile(root: Path, name: str, payload) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / f"{name}.json"
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def test_a_profile_from_a_future_version_still_loads(tmp_path: Path):
+    """Settings this version does not know about must not lose the ones it does."""
+    path = write_profile(
+        tmp_path,
+        "ahmed",
+        {
+            "version": 99,
+            "name": "Ahmed",
+            "created": "2026-08-19T10:00:00",
+            "dials": {"pitch": 7, "pause": 3, "mix": 2, "tempo": 8, "swing": 4},
+            "voice": "chord",
+            "notation": "sargam",
+            "theme": "midnight",
+            "calibration": {"range_low_midi": 48, "vibrato_hz": 5.5},
+        },
+    )
+    profile = ProfileStore(tmp_path).load(path)
+
+    assert profile is not None
+    assert profile.name == "Ahmed"
+    assert profile.pitch_sensitivity == 7
+    assert profile.tempo == 8
+    assert profile.voice == "chord"
+    assert profile.notation == "sargam"
+    assert profile.calibration.range_low_midi == 48
+
+
+def test_a_future_profile_is_not_rewritten_just_by_being_read(tmp_path: Path):
+    """Reading someone's profile must not quietly drop what it did not parse."""
+    path = write_profile(
+        tmp_path, "ahmed", {"version": 99, "name": "Ahmed", "theme": "midnight"}
+    )
+    before = path.read_text()
+    ProfileStore(tmp_path).list()
+
+    assert path.read_text() == before
+
+
+def test_a_profile_that_is_a_json_list_is_skipped(tmp_path: Path):
+    write_profile(tmp_path, "odd", ["not", "a", "profile"])
+    assert ProfileStore(tmp_path).list() == []
+
+
+def test_a_profile_with_no_name_is_skipped(tmp_path: Path):
+    write_profile(tmp_path, "nameless", {"dials": {"pitch": 3}})
+    assert ProfileStore(tmp_path).list() == []
+
+
+def test_a_profile_with_an_empty_name_is_skipped(tmp_path: Path):
+    write_profile(tmp_path, "blank", {"name": ""})
+    assert ProfileStore(tmp_path).list() == []
+
+
+def test_a_profile_with_no_created_date_falls_back_to_the_file(tmp_path: Path):
+    path = write_profile(tmp_path, "ahmed", {"name": "Ahmed"})
+    profile = ProfileStore(tmp_path).load(path)
+
+    assert profile is not None
+    assert profile.created.year >= 2020
+
+
+def test_a_profile_with_an_unreadable_created_date_still_loads(tmp_path: Path):
+    path = write_profile(tmp_path, "ahmed", {"name": "Ahmed", "created": "never"})
+    assert ProfileStore(tmp_path).load(path) is not None
+
+
+def test_a_profile_naming_a_tab_that_no_longer_exists_still_loads(tmp_path: Path):
+    path = write_profile(
+        tmp_path, "ahmed", {"name": "Ahmed", "last_tab": "tab-that-went-away"}
+    )
+    profile = ProfileStore(tmp_path).load(path)
+
+    assert profile is not None
+    assert profile.last_tab == "tab-that-went-away"  # the app decides what to do
+
+
+def test_a_profile_with_a_null_voice_falls_back_to_pure(tmp_path: Path):
+    path = write_profile(tmp_path, "ahmed", {"name": "Ahmed", "voice": None})
+    assert ProfileStore(tmp_path).load(path).voice == "pure"
+
+
+def test_one_unreadable_profile_does_not_hide_the_others(tmp_path: Path):
+    store = ProfileStore(tmp_path)
+    store.create("Ahmed")
+    (tmp_path / "broken.json").write_text("{ not json")
+
+    assert [p.name for p in store.list()] == ["Ahmed"]
+
+
+def test_a_profile_store_pointed_at_a_file_lists_nothing(tmp_path: Path):
+    blocked = tmp_path / "profiles"
+    blocked.write_text("in the way")
+    assert ProfileStore(blocked).list() == []
+
+
+def test_saving_into_a_path_that_is_a_file_raises_an_os_error(tmp_path: Path):
+    """The app catches OSError when remembering dials; nothing else."""
+    blocked = tmp_path / "profiles"
+    blocked.write_text("in the way")
+    store = ProfileStore(blocked)
+
+    with pytest.raises(OSError):
+        store.create("Ahmed")
+
+
+def test_deleting_a_profile_whose_file_is_already_gone_is_quiet(tmp_path: Path):
+    store = ProfileStore(tmp_path)
+    profile = store.create("Ahmed")
+    profile.path.unlink()
+
+    store.delete(profile)  # must not raise
+    assert store.list() == []
+
+
+def test_two_names_that_slug_the_same_way_are_rejected_as_duplicates(tmp_path: Path):
+    """One file per profile means the slug has to be the identity."""
+    store = ProfileStore(tmp_path)
+    store.create("Ahmed S")
+
+    with pytest.raises(ValueError):
+        store.create("Ahmed_S")  # spaces and underscores both become "-"
+
+
+def test_a_name_with_nothing_safe_in_it_still_gets_a_file(tmp_path: Path):
+    store = ProfileStore(tmp_path)
+    profile = store.create("!!!")
+
+    assert profile.path.is_file()
+    assert [p.name for p in store.list()] == ["!!!"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "ProfileStore.load calls int() on the stored dials without guarding, "
+        "so a hand-edited profile with a non-numeric dial raises ValueError "
+        "out of list() -- and the chooser cannot open at all"
+    ),
+)
+@pytest.mark.parametrize("dial", ["high", None, [5]])
+def test_a_profile_with_a_nonsense_dial_is_skipped(tmp_path: Path, dial):
+    store = ProfileStore(tmp_path)
+    store.create("Ahmed")
+    write_profile(tmp_path, "broken", {"name": "Broken", "dials": {"pitch": dial}})
+
+    assert [p.name for p in store.list()] == ["Ahmed"]

@@ -279,6 +279,11 @@ class Player:
         self._latency_frames = 0
         self._worker: threading.Thread | None = None
         self._halt = threading.Event()
+        # Bumped per playback. A worker from a previous take must not write
+        # the cursor of the current one after it has been superseded.
+        self._generation = 0
+        self._lock = threading.Lock()
+        self._closed: set = set()
 
     @property
     def playing(self) -> bool:
@@ -334,14 +339,18 @@ class Player:
 
         self._stream = stream
         self._latency_frames = int(float(stream.latency) * self.sample_rate)
-        self._worker = threading.Thread(target=self._pump, daemon=True)
+        self._generation += 1
+        self._worker = threading.Thread(
+            target=self._pump, args=(stream, self._generation), daemon=True
+        )
         self._worker.start()
 
-    def _pump(self) -> None:
+    def _pump(self, stream, generation: int) -> None:
         """Feed the device until the buffer runs out or playback is stopped."""
-        stream = self._stream
         try:
-            while not self._halt.is_set() and stream is not None:
+            while not self._halt.is_set():
+                if generation != self._generation:
+                    return  # superseded; the newer take owns the state now
                 start = self._cursor
                 if start >= self._buffer.size:
                     break
@@ -352,36 +361,59 @@ class Player:
                     )
                 # Releases the GIL while it waits for room in the ring buffer.
                 stream.write(chunk)
-                self._cursor = start + BLOCK
+                if generation == self._generation:
+                    self._cursor = start + BLOCK
         except Exception:
             pass
         finally:
-            self._close(stream)
+            # Reaching the end on its own: close here, since stop() never ran.
+            if generation == self._generation and not self._halt.is_set():
+                self._shut(stream, drain=True)
+                if self._stream is stream:
+                    self._stream = None
 
-    def _close(self, stream) -> None:
-        if stream is None:
-            return
+    def _shut(self, stream, drain: bool) -> None:
+        """Close a stream exactly once, from whichever thread finished with it."""
+        with self._lock:
+            if stream is None or stream in self._closed:
+                return
+            self._closed.add(stream)
         try:
-            if not self._halt.is_set():
+            if drain:
                 stream.stop()  # let what is already buffered finish
+            else:
+                stream.abort()  # and unblock a worker waiting inside write()
             stream.close()
         except Exception:
             pass
-        if self._stream is stream:
-            self._stream = None
 
     def stop(self) -> None:
+        """Stop playback and release the device.
+
+        The stream is closed only after its worker has exited. Closing it from
+        here while the worker was still inside `write()` was a genuine crash:
+        rapid start/stop -- clicking several piano keys quickly, each of which
+        previews a note -- could take the whole process down, and a Textual app
+        that dies without unwinding leaves the terminal in mouse-reporting mode.
+        """
         self._halt.set()
+        self._generation += 1  # orphan any worker still running
         stream = self._stream
+        worker = self._worker
         self._stream = None
+        self._worker = None
+
         if stream is not None:
             try:
-                stream.abort()
-                stream.close()
+                stream.abort()  # unblocks a pending write so the worker returns
             except Exception:
                 pass
-        worker = self._worker
-        self._worker = None
         if worker is not None and worker.is_alive():
-            worker.join(timeout=1.0)
+            worker.join(timeout=2.0)
+            if worker.is_alive():
+                # Never close underneath a live worker; leaking one stream is
+                # survivable, a use-after-free is not.
+                self._cursor = 0
+                return
+        self._shut(stream, drain=False)
         self._cursor = 0
