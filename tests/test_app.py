@@ -67,9 +67,17 @@ class FakePlayer:
         self.playing = False
         self.position = 0.0
         self.played: list[Note] | None = None
+        self.buffer = None
+        self.sample_rate = SR
 
     def play(self, notes):
         self.played = list(notes)
+        self.playing = True
+        self.position = 0.0
+
+    def play_audio(self, buffer, rate=None):
+        self.buffer = buffer
+        self.sample_rate = rate or SR
         self.playing = True
         self.position = 0.0
 
@@ -157,9 +165,11 @@ async def test_silence_reports_no_notes_without_crashing(tmp_path: Path):
         await record_once(pilot)
 
         assert app.notes == []
-        assert app.query_one("#play", Button).disabled is True
         detail = str(app.query_one("#detail", Static).content)
         assert "No notes detected" in detail
+        # Playback stays available: with nothing transcribed, hearing the
+        # recording back is exactly how you work out what went wrong.
+        assert app.query_one("#play", Button).disabled is False
 
 
 # -- playback --------------------------------------------------------------
@@ -474,7 +484,9 @@ async def test_sensitivity_starts_balanced(tmp_path: Path):
     app = make_app(tmp_path)
     async with app.run_test():
         assert app.sensitivity == 5
-        assert "Sensitivity" in str(app.query_one("#sensitivity", Static).content)
+        assert app.pause_sensitivity == 5
+        assert "Pitch" in str(app.query_one("#sensitivity", Static).content)
+        assert "Pauses" in str(app.query_one("#pause", Static).content)
 
 
 async def test_brackets_move_the_dial(tmp_path: Path):
@@ -544,3 +556,103 @@ async def test_clear_resets_the_pitch_track(tmp_path: Path):
         await pilot.press("c")
         await pilot.pause()
         assert app.frames == []
+
+
+# -- pause dial and comparison playback ------------------------------------
+
+
+async def test_comma_and_period_move_the_pause_dial(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("full_stop")
+        assert app.pause_sensitivity == 6
+        await pilot.press("comma")
+        await pilot.press("comma")
+        assert app.pause_sensitivity == 4
+
+
+async def test_pause_dial_clamps(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        for _ in range(12):
+            await pilot.press("comma")
+        assert app.pause_sensitivity == 1
+        for _ in range(20):
+            await pilot.press("full_stop")
+        assert app.pause_sensitivity == 9
+
+
+async def test_the_two_dials_are_independent(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("comma")
+        assert app.sensitivity == 5 and app.pause_sensitivity == 4
+        await pilot.press("right_square_bracket")
+        assert app.sensitivity == 6 and app.pause_sensitivity == 4
+
+
+async def test_compare_button_cycles_the_source(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        assert app.source == "tones"
+        await pilot.press("m")
+        assert app.source == "hum"
+        await pilot.press("m")
+        assert app.source == "both"
+        await pilot.press("m")
+        assert app.source == "tones"
+
+
+async def test_compare_button_label_follows_the_source(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        assert "Tones" in str(app.query_one("#compare", Button).label)
+        await pilot.press("m")
+        assert "hum" in str(app.query_one("#compare", Button).label).lower()
+
+
+async def test_playing_the_hum_uses_the_recording_not_the_notes(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("m")  # -> hum
+        await pilot.press("p")
+        assert app.player.playing is True
+        assert app.player.played is None  # notes were not what got played
+        assert app.player.buffer is not None
+
+
+async def test_overlay_mixes_hum_and_tones(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("m")
+        await pilot.press("m")  # -> both
+        await pilot.press("p")
+        assert app.player.playing is True
+        assert app.player.buffer is not None
+        assert app.player.buffer.size > 0
+
+
+async def test_recording_keeps_the_audio_for_comparison(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        assert app.audio is not None
+        assert app.audio_rate == SR
+
+
+async def test_loading_a_run_restores_its_audio(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("c")
+        await pilot.pause()
+        assert app.audio is None
+
+        app.load_selected_session()
+        await pilot.pause()
+        assert app.audio is not None
+        assert app.audio_rate == SR

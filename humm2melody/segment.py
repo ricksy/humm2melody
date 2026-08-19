@@ -26,6 +26,7 @@ class Note:
     freq: float  # mean measured frequency across the note
     confidence: float  # mean YIN confidence
     pitch: float = 0.0  # continuous MIDI value before snapping, 0 if unknown
+    attack: bool = False  # began at a detected onset, so must not be merged back
 
     @property
     def duration(self) -> float:
@@ -120,6 +121,37 @@ def glide_mask(
     return mask
 
 
+def onset_mask(rms: np.ndarray, rise_db: float | None, lookback: int = 3) -> np.ndarray:
+    """True at frames where loudness jumps enough to be a fresh attack.
+
+    This is the one thing pitch cannot tell you. Play the same key twice, or
+    hum two notes on one breath, and the pitch track is a single unbroken
+    line -- the only evidence that there are two notes is that the sound got
+    suddenly louder again. Silence is not required and often never happens: a
+    piano note is still ringing when the next one starts.
+
+    Measured in dB against the *median* of the preceding few frames, so a note
+    that decays and is then struck again registers even though it never
+    reached silence -- while a single dropped frame, which is a detector
+    artefact rather than a pause, does not drag the reference down with it.
+    """
+    count = rms.size
+    mask = np.zeros(count, dtype=bool)
+    if rise_db is None or count < lookback + 2:
+        return mask
+
+    level = 20.0 * np.log10(np.maximum(rms, 1e-9))
+    rise = np.zeros(count)
+    for i in range(lookback, count):
+        rise[i] = level[i] - float(np.median(level[i - lookback : i]))
+
+    # Only the peak of a rise counts, or one attack marks several frames.
+    for i in range(lookback, count - 1):
+        if rise[i] >= rise_db and rise[i] >= rise[i - 1] and rise[i] > rise[i + 1]:
+            mask[i] = True
+    return mask
+
+
 def tuning_offset_semitones(midis: np.ndarray) -> float:
     """How far a performance sits off the equal-tempered grid, in semitones.
 
@@ -155,6 +187,7 @@ def segment_notes(
     max_step: float = 0.8,
     merge_within: float = 0.0,
     cluster_tolerance: float = 0.0,
+    onset_rise_db: float | None = 7.0,
 ) -> list[Note]:
     """Group a pitch track into notes.
 
@@ -206,10 +239,11 @@ def segment_notes(
 
     frame_step = float(np.median(np.diff(times))) if len(times) > 1 else 0.01
     gap_frames = max(1, int(round(gap_tolerance / frame_step)))
+    onsets = onset_mask(np.array([f.rms for f in frames]), onset_rise_db)
 
     notes: list[Note] = []
 
-    def emit(start_idx: int, end_idx: int) -> None:
+    def emit(start_idx: int, end_idx: int, attack: bool = False) -> None:
         """Emit one note for the held region [start_idx, end_idx)."""
         values = smoothed[start_idx:end_idx]
         values = values[~np.isnan(values)]
@@ -232,6 +266,7 @@ def segment_notes(
             Note(
                 midi=int(round(pitch)),
                 pitch=pitch,
+                attack=attack,
                 start=start,
                 end=end,
                 freq=float(np.mean([m.freq for m in members])),
@@ -242,30 +277,33 @@ def segment_notes(
     run_start: int | None = None
     last_valid: int | None = None
     silence = 0
+    started_on_attack = False
 
     for i, value in enumerate(smoothed):
         if np.isnan(value):
             if run_start is not None:
                 silence += 1
                 if silence > gap_frames:
-                    emit(run_start, last_valid + 1)
+                    emit(run_start, last_valid + 1, started_on_attack)
                     run_start = None
                     silence = 0
             continue
 
         if run_start is None:
             run_start, last_valid, silence = i, i, 0
+            started_on_attack = bool(onsets[i])
             continue
 
-        # A genuine jump ends the region even when nothing was gliding, which
-        # keeps back-to-back notes apart if glide gating is switched off.
-        if abs(value - smoothed[last_valid]) > max_step:
-            emit(run_start, last_valid + 1)
+        # A fresh attack starts a new note even at a constant pitch, and a
+        # genuine pitch jump ends the region even when nothing was gliding.
+        if onsets[i] or abs(value - smoothed[last_valid]) > max_step:
+            emit(run_start, last_valid + 1, started_on_attack)
             run_start = i
+            started_on_attack = bool(onsets[i])
         last_valid, silence = i, 0
 
     if run_start is not None and last_valid is not None:
-        emit(run_start, last_valid + 1)
+        emit(run_start, last_valid + 1, started_on_attack)
 
     notes = _cluster_pitches(notes, cluster_tolerance)
     return _merge_adjacent(notes, gap_tolerance, merge_within)
@@ -306,6 +344,9 @@ def _cluster_pitches(notes: list[Note], tolerance: float) -> list[Note]:
             resolved[i] = Note(
                 midi=midi,
                 pitch=centre,
+                # Carried through deliberately: losing it here would let the
+                # merge step weld a fresh attack back onto its predecessor.
+                attack=notes[i].attack,
                 start=notes[i].start,
                 end=notes[i].end,
                 freq=notes[i].freq,
@@ -332,7 +373,9 @@ def _merge_adjacent(
         close = note.midi == prev.midi or (
             merge_within > 0 and abs(note.midi - prev.midi) <= merge_within
         )
-        if close and note.start - prev.end <= gap_tolerance:
+        # Never merge away a note that began with its own attack: that attack
+        # is the only reason we know it is a separate note at all.
+        if close and not note.attack and note.start - prev.end <= gap_tolerance:
             total = prev.duration + note.duration
             blended = (
                 prev.freq * prev.duration + note.freq * note.duration
@@ -361,30 +404,84 @@ _ANCHORS: dict[int, dict[str, float]] = {
     SENSITIVITY_MIN: {
         "smoothing": 9,
         "min_duration": 0.20,
-        "gap_tolerance": 0.12,
         "max_glide_rate": 3.0,
         "merge_within": 1.2,
-        "cluster_tolerance": 1.0,
+        "cluster_tolerance": 1.00,
     },
-    # The tuned defaults.
+    # Balanced. Calibrated from use rather than theory: the first version put
+    # this point far too coarse, and real humming wanted roughly what used to
+    # be level 8, so the curve was shifted to put that in the middle.
     SENSITIVITY_DEFAULT: {
-        "smoothing": 5,
-        "min_duration": 0.09,
-        "gap_tolerance": 0.07,
-        "max_glide_rate": 5.0,
+        "smoothing": 3,
+        "min_duration": 0.06,
+        "max_glide_rate": 8.0,
         "merge_within": 0.0,
-        "cluster_tolerance": 0.35,
+        "cluster_tolerance": 0.09,
     },
     # Literal: every deliberate move is a note, at the cost of picking up wobble.
     SENSITIVITY_MAX: {
         "smoothing": 3,
-        "min_duration": 0.05,
-        "gap_tolerance": 0.04,
-        "max_glide_rate": 9.0,
+        "min_duration": 0.035,
+        "max_glide_rate": 14.0,
         "merge_within": 0.0,
         "cluster_tolerance": 0.0,
     },
 }
+
+
+PAUSE_MIN = 1
+PAUSE_MAX = 9
+PAUSE_DEFAULT = 5
+
+_PAUSE_ANCHORS: dict[int, dict[str, float | None]] = {
+    # Reluctant: only real silence separates notes.
+    PAUSE_MIN: {
+        "gap_tolerance": 0.16,
+        "min_rms": 0.004,
+        "onset_rise_db": None,
+    },
+    PAUSE_DEFAULT: {
+        "gap_tolerance": 0.07,
+        "min_rms": 0.006,
+        "onset_rise_db": 7.0,
+    },
+    # Eager: a brief dip and a fresh attack are enough.
+    PAUSE_MAX: {
+        "gap_tolerance": 0.025,
+        "min_rms": 0.010,
+        "onset_rise_db": 3.0,
+    },
+}
+
+
+def pause_settings(level: int) -> dict:
+    """Parameters for how eagerly to split notes in *time*, from 1 to 9.
+
+    Separate from the pitch dial because it answers a different question. Two
+    presses of the same key are one unbroken pitch: no amount of pitch
+    resolution separates them, and the only evidence of a second note is the
+    attack. Low levels need real silence; high levels accept a brief dip and a
+    fresh onset.
+    """
+    level = max(PAUSE_MIN, min(PAUSE_MAX, int(level)))
+    if level in _PAUSE_ANCHORS:
+        return dict(_PAUSE_ANCHORS[level])
+
+    lo_key = PAUSE_MIN if level < PAUSE_DEFAULT else PAUSE_DEFAULT
+    hi_key = PAUSE_DEFAULT if level < PAUSE_DEFAULT else PAUSE_MAX
+    lo, hi = _PAUSE_ANCHORS[lo_key], _PAUSE_ANCHORS[hi_key]
+    weight = (level - lo_key) / (hi_key - lo_key)
+
+    settings: dict = {}
+    for key in lo:
+        low, high = lo[key], hi[key]
+        if low is None or high is None:
+            # Onset detection is simply off at the reluctant end; fade it in
+            # from the first level that has it rather than interpolating None.
+            settings[key] = high if weight > 0 else low
+        else:
+            settings[key] = low + (high - low) * weight
+    return settings
 
 
 def sensitivity_settings(level: int) -> dict:
@@ -412,9 +509,13 @@ def sensitivity_settings(level: int) -> dict:
 
 
 def segment_with_sensitivity(
-    frames: list[PitchFrame], level: int = SENSITIVITY_DEFAULT, **overrides
+    frames: list[PitchFrame],
+    level: int = SENSITIVITY_DEFAULT,
+    pause_level: int = PAUSE_DEFAULT,
+    **overrides,
 ) -> list[Note]:
-    """Segment a pitch track at the given sensitivity level."""
+    """Segment a pitch track at the given pitch and pause sensitivity levels."""
     settings = sensitivity_settings(level)
+    settings.update(pause_settings(pause_level))
     settings.update(overrides)
     return segment_notes(frames, **settings)

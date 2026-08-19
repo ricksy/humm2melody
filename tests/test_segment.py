@@ -319,3 +319,83 @@ def test_clustering_leaves_genuine_intervals_alone():
     frames = analyse(legato([60, 64, 67], hold=0.5))
     notes = segment_with_sensitivity(frames, 1)
     assert len({n.name for n in notes}) == 3
+
+
+# -- onsets and the pause dial ---------------------------------------------
+
+
+def struck(count=3, note=0.35, gap=0.05, midi=64, decay=6.0, sr=SR):
+    """Repeated same-pitch notes that decay but never reach silence."""
+    out = []
+    for _ in range(count):
+        t = np.arange(int(note * sr)) / sr
+        env = np.exp(-decay * t)
+        phase = 2 * np.pi * midi_to_hz(midi) * t
+        out.append(0.5 * env * (np.sin(phase) + 0.35 * np.sin(2 * phase)))
+        if gap > 0:
+            out.append(np.zeros(int(gap * sr)))
+    return np.concatenate(out).astype(np.float32)
+
+
+def test_repeated_notes_need_onsets_not_pitch():
+    """Three strikes of one key are a single unbroken pitch."""
+    frames = analyse(struck(gap=0.0))
+    assert len(segment_with_sensitivity(frames, 5, pause_level=1)) == 1
+    assert len(segment_with_sensitivity(frames, 5, pause_level=5)) == 3
+
+
+def test_repeated_notes_split_across_short_gaps():
+    for gap in (0.0, 0.02, 0.05, 0.08, 0.15):
+        frames = analyse(struck(gap=gap))
+        notes = segment_with_sensitivity(frames, 5, pause_level=7)
+        assert len(notes) == 3, f"gap={gap}"
+        assert {n.name for n in notes} == {"E4"}
+
+
+def test_pause_dial_is_monotonic():
+    from humm2melody.segment import pause_settings
+
+    levels = [pause_settings(x) for x in range(1, 10)]
+    gaps = [s["gap_tolerance"] for s in levels]
+    assert gaps == sorted(gaps, reverse=True)
+
+
+def test_lowest_pause_level_disables_onset_splitting():
+    from humm2melody.segment import pause_settings
+
+    assert pause_settings(1)["onset_rise_db"] is None
+
+
+def test_onset_mask_ignores_a_single_dropped_frame():
+    """A one-frame dropout is a detector artefact, not a re-attack."""
+    from humm2melody.segment import onset_mask
+
+    rms = np.full(30, 0.2)
+    rms[15] = 0.0
+    assert not onset_mask(rms, 6.0).any()
+
+
+def test_onset_mask_finds_a_real_re_attack():
+    from humm2melody.segment import onset_mask
+
+    rms = np.concatenate([np.full(10, 0.30), np.full(10, 0.02), np.full(10, 0.30)])
+    assert onset_mask(rms, 6.0).any()
+
+
+def test_onset_mask_is_off_when_disabled():
+    from humm2melody.segment import onset_mask
+
+    rms = np.concatenate([np.full(10, 0.3), np.full(10, 0.01), np.full(10, 0.3)])
+    assert not onset_mask(rms, None).any()
+
+
+def test_onsets_do_not_shatter_one_sustained_note():
+    frames = analyse(legato([69], hold=1.0, vibrato=0.3))
+    assert len(segment_with_sensitivity(frames, 5, pause_level=9)) <= 2
+
+
+def test_a_separate_attack_survives_pitch_clustering():
+    """Clustering rewrites notes; it must not drop the attack that split them."""
+    frames = analyse(struck(gap=0.02))
+    notes = segment_with_sensitivity(frames, 1, pause_level=7)
+    assert len(notes) == 3

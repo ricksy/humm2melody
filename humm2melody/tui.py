@@ -16,16 +16,25 @@ from textual.widgets import Static
 
 from .audio import AudioError, Recorder
 from .pitch import NOTE_NAMES
-from .playback import Player
+from .playback import Player, mix_hum_with_tones
 from .pitch import PitchFrame
 from .segment import (
+    PAUSE_DEFAULT,
+    PAUSE_MAX,
+    PAUSE_MIN,
     SENSITIVITY_DEFAULT,
     SENSITIVITY_MAX,
     SENSITIVITY_MIN,
     Note,
     segment_with_sensitivity,
 )
-from .sessions import DEFAULT_OUTPUT_DIR, Session, SessionStore, read_pitch_track
+from .sessions import (
+    DEFAULT_OUTPUT_DIR,
+    Session,
+    SessionStore,
+    read_pitch_track,
+    read_wav,
+)
 
 MAX_ROLL_ROWS = 32
 """Cap the piano roll's pitch range so one stray octave can't blow up the view."""
@@ -54,27 +63,57 @@ class ActionButton(Button):
     can_focus = False
 
 
-class SensitivityDial(Static):
-    """How finely to distinguish pitches, as a labelled dial."""
+class Dial(Static):
+    """A labelled 1-9 dial with a caption describing the current setting."""
 
-    def show(self, level: int) -> None:
-        text = Text("Sensitivity  ", style="bold")
+    def render_dial(
+        self, label: str, keys: str, level: int, captions: tuple[str, str, str]
+    ) -> None:
+        low, mid, high = captions
+        text = Text(f"{label:<11}", style="bold")
+        text.append(f"{keys}  ", style="dim")
         text.append("[", style="dim")
         for step in range(SENSITIVITY_MIN, SENSITIVITY_MAX + 1):
-            if step == level:
-                text.append("●", style=f"bold {HIGHLIGHT}")
-            else:
-                text.append("·", style="grey30")
+            text.append(
+                "●" if step == level else "·",
+                style=f"bold {HIGHLIGHT}" if step == level else "grey30",
+            )
         text.append("]", style="dim")
         text.append(f"  {level}/{SENSITIVITY_MAX}   ", style="bold")
-        if level < SENSITIVITY_DEFAULT:
-            note = "forgiving — small wobbles read as the same note"
-        elif level == SENSITIVITY_DEFAULT:
-            note = "balanced"
-        else:
-            note = "literal — small differences become separate notes"
-        text.append(note, style="dim")
+        text.append(low if level < 5 else (mid if level == 5 else high), style="dim")
         self.update(text)
+
+
+class SensitivityDial(Dial):
+    """How finely to distinguish pitches."""
+
+    def show(self, level: int) -> None:
+        self.render_dial(
+            "Pitch",
+            "[ ]",
+            level,
+            (
+                "forgiving — small wobbles read as one note",
+                "balanced",
+                "literal — small differences become separate notes",
+            ),
+        )
+
+
+class PauseDial(Dial):
+    """How eagerly to split notes in time."""
+
+    def show(self, level: int) -> None:
+        self.render_dial(
+            "Pauses",
+            "< >",
+            level,
+            (
+                "only real silence separates notes",
+                "balanced",
+                "a fresh attack alone starts a new note",
+            ),
+        )
 
 
 class LevelMeter(Static):
@@ -420,6 +459,8 @@ class Humm2MelodyApp(App):
     #toggle { min-width: 24; margin-right: 2; }
     #play { min-width: 22; }
     #sensitivity { height: 1; margin: 1 2 0 2; }
+    #pause { height: 1; margin: 0 2 0 2; }
+    #compare { min-width: 26; margin-left: 2; }
 
     #main { height: 1fr; margin: 1 2; }
     #results { width: 1fr; }
@@ -444,8 +485,11 @@ class Humm2MelodyApp(App):
         ("p", "play", "Play back"),
         ("r", "rename_run", "Rename run"),
         ("d", "delete_run", "Delete run"),
-        ("left_square_bracket", "less_sensitive", "Less sensitive"),
-        ("right_square_bracket", "more_sensitive", "More sensitive"),
+        ("left_square_bracket", "less_sensitive", "Pitch −"),
+        ("right_square_bracket", "more_sensitive", "Pitch +"),
+        ("comma", "fewer_pauses", "Pauses −"),
+        ("full_stop", "more_pauses", "Pauses +"),
+        ("m", "cycle_source", "Compare"),
         ("c", "clear", "Clear"),
         ("q", "quit", "Quit"),
     ]
@@ -470,6 +514,10 @@ class Humm2MelodyApp(App):
         self.notes: list[Note] = []
         self.frames: list[PitchFrame] = []
         self.sensitivity = SENSITIVITY_DEFAULT
+        self.pause_sensitivity = PAUSE_DEFAULT
+        self.source = "tones"
+        self.audio = None
+        self.audio_rate = 0
         self.sessions: list[Session] = []
         self._record_timer = None
         self._play_timer = None
@@ -485,7 +533,9 @@ class Humm2MelodyApp(App):
             yield ActionButton(
                 "♪  Play back", variant="primary", id="play", disabled=True
             )
+            yield ActionButton("◑  Tones only", id="compare")
         yield SensitivityDial(id="sensitivity")
+        yield PauseDial(id="pause")
         with Horizontal(id="main"):
             with VerticalScroll(id="results"):
                 yield PianoRoll(id="roll")
@@ -502,6 +552,8 @@ class Humm2MelodyApp(App):
         self.query_one("#readout", NoteReadout).idle("Ready.")
         self.query_one("#meter", LevelMeter).show(0.0)
         self.query_one("#sensitivity", SensitivityDial).show(self.sensitivity)
+        self.query_one("#pause", PauseDial).show(self.pause_sensitivity)
+        self.query_one("#compare", Button).label = self._source_label()
         # One key per line: the sidebar is too narrow for a single run-on line,
         # which wraps mid-word.
         self.query_one("#run-hint", Static).update(
@@ -524,6 +576,8 @@ class Humm2MelodyApp(App):
             self.action_toggle()
         elif event.button.id == "play":
             self.action_play()
+        elif event.button.id == "compare":
+            self.action_cycle_source()
 
     # -- recording ---------------------------------------------------------
 
@@ -569,7 +623,11 @@ class Humm2MelodyApp(App):
         frames = self.recorder.stop()
         audio = self.recorder.audio()
         self.frames = frames
-        self.notes = segment_with_sensitivity(frames, self.sensitivity)
+        self.audio = audio if len(audio) else None
+        self.audio_rate = self.recorder.sample_rate
+        self.notes = segment_with_sensitivity(
+            frames, self.sensitivity, self.pause_sensitivity
+        )
 
         button = self.query_one("#toggle", Button)
         button.label = "▶  Start humming"
@@ -618,14 +676,27 @@ class Humm2MelodyApp(App):
     # -- playback ----------------------------------------------------------
 
     def action_play(self) -> None:
-        if self.recorder.running or not self.notes:
+        if self.recorder.running:
+            return
+        if not self.notes and self.audio is None:
             return
         if self.player.playing:
             self._stop_playback()
             return
 
         try:
-            self.player.play(self.notes)
+            if self.source == "tones" or self.audio is None:
+                self.player.play(self.notes)
+            elif self.source == "hum":
+                self.player.play_audio(self.audio, self.audio_rate)
+            else:
+                rate = self.player.sample_rate or self.audio_rate
+                self.player.play_audio(
+                    mix_hum_with_tones(
+                        self.audio, self.audio_rate, self.notes, rate
+                    ),
+                    rate,
+                )
         except Exception as exc:
             self._set_hint(Text(f"Could not play audio: {exc}", style="bold red"))
             return
@@ -716,8 +787,16 @@ class Humm2MelodyApp(App):
             return
         self._stop_playback()
         self.frames = read_pitch_track(session.pitch_track_path)
+        self.audio, self.audio_rate = None, 0
+        if session.hum_path.is_file():
+            try:
+                self.audio, self.audio_rate = read_wav(session.hum_path)
+            except Exception:
+                self.audio, self.audio_rate = None, 0
         if self.frames:
-            self.notes = segment_with_sensitivity(self.frames, self.sensitivity)
+            self.notes = segment_with_sensitivity(
+                self.frames, self.sensitivity, self.pause_sensitivity
+            )
         else:
             self.notes = list(session.notes)
         self._show_notes(self.notes)
@@ -785,37 +864,87 @@ class Humm2MelodyApp(App):
     def _show_notes(self, notes: list[Note]) -> None:
         self.query_one("#roll", PianoRoll).show(notes)
         self.query_one("#sequence", MelodySequence).show(notes)
-        self.query_one("#play", Button).disabled = not notes
+        self.query_one("#play", Button).disabled = not (notes or self.audio is not None)
         self.query_one("#detail", Static).update(
             _detail_table(notes) if notes else Text("")
         )
 
     def action_less_sensitive(self) -> None:
-        self._set_sensitivity(self.sensitivity - 1)
+        self._set_dials(self.sensitivity - 1, self.pause_sensitivity)
 
     def action_more_sensitive(self) -> None:
-        self._set_sensitivity(self.sensitivity + 1)
+        self._set_dials(self.sensitivity + 1, self.pause_sensitivity)
 
-    def _set_sensitivity(self, level: int) -> None:
-        """Change the dial and re-segment, without needing a new recording."""
-        level = max(SENSITIVITY_MIN, min(SENSITIVITY_MAX, level))
-        if level == self.sensitivity:
+    def action_fewer_pauses(self) -> None:
+        self._set_dials(self.sensitivity, self.pause_sensitivity - 1)
+
+    def action_more_pauses(self) -> None:
+        self._set_dials(self.sensitivity, self.pause_sensitivity + 1)
+
+    def _set_dials(self, pitch: int, pause: int) -> None:
+        """Move the dials and re-segment, without needing a new recording."""
+        pitch = max(SENSITIVITY_MIN, min(SENSITIVITY_MAX, pitch))
+        pause = max(PAUSE_MIN, min(PAUSE_MAX, pause))
+        if (pitch, pause) == (self.sensitivity, self.pause_sensitivity):
             return
-        self.sensitivity = level
+        self.sensitivity, self.pause_sensitivity = pitch, pause
+
         dial = self._find("#sensitivity", SensitivityDial)
         if dial is not None:
-            dial.show(level)
+            dial.show(pitch)
+        pause_dial = self._find("#pause", PauseDial)
+        if pause_dial is not None:
+            pause_dial.show(pause)
 
         if self.recorder.running or not self.frames:
             return
         self._stop_playback()
-        self.notes = segment_with_sensitivity(self.frames, level)
+        self._resegment()
+        self._set_hint(
+            f"Pitch {pitch}/{SENSITIVITY_MAX} · pauses {pause}/{PAUSE_MAX} · "
+            f"{len(self.notes)} notes"
+        )
+
+    def _resegment(self) -> None:
+        self.notes = segment_with_sensitivity(
+            self.frames, self.sensitivity, self.pause_sensitivity
+        )
         self._show_notes(self.notes)
-        self._set_hint(f"Sensitivity {level}/{SENSITIVITY_MAX} · {len(self.notes)} notes")
+
+    # -- comparison --------------------------------------------------------
+
+    SOURCES = ("tones", "hum", "both")
+
+    def _source_label(self) -> str:
+        return {
+            "tones": "◑  Tones only",
+            "hum": "◑  Your hum",
+            "both": "◑  Hum + tones",
+        }[self.source]
+
+    def action_cycle_source(self) -> None:
+        """Cycle what `p` plays: the transcription, your recording, or both."""
+        if self.recorder.running:
+            return
+        self._stop_playback()
+        self.source = self.SOURCES[
+            (self.SOURCES.index(self.source) + 1) % len(self.SOURCES)
+        ]
+        button = self._find("#compare", Button)
+        if button is not None:
+            button.label = self._source_label()
+        if self.source == "both":
+            self._set_hint("Plays your hum with the tones on top — do they agree?")
+        elif self.source == "hum":
+            self._set_hint("Plays your original recording back.")
+        else:
+            self._set_hint("Plays the transcribed notes as tones.")
 
     def _clear_results(self) -> None:
         self.notes = []
         self.frames = []
+        self.audio = None
+        self.audio_rate = 0
         self._show_notes([])
 
     def _set_hint(self, message) -> None:

@@ -82,6 +82,45 @@ def _envelope(length: int, sample_rate: int) -> np.ndarray:
     return env
 
 
+def resample(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
+    """Linear resample. Good enough for auditioning a hum against its notes."""
+    if src_rate == dst_rate or audio.size == 0:
+        return np.asarray(audio, dtype=np.float32)
+    count = int(round(audio.size * dst_rate / src_rate))
+    source = np.linspace(0.0, 1.0, audio.size, endpoint=False)
+    target = np.linspace(0.0, 1.0, count, endpoint=False)
+    return np.interp(target, source, audio).astype(np.float32)
+
+
+def mix_hum_with_tones(
+    hum: np.ndarray,
+    hum_rate: int,
+    notes: list[Note],
+    rate: int,
+    *,
+    hum_gain: float = 0.85,
+    tone_gain: float = 0.45,
+) -> np.ndarray:
+    """Your recording and the transcription playing together.
+
+    The single most direct check of a transcription: if the tones sit inside
+    the hum, it heard you right; if they beat against it or wander off, it did
+    not. The tones sit under the hum so the hum stays recognisable.
+    """
+    voice = resample(hum, hum_rate, rate) * hum_gain
+    tones = render(notes, rate) * (tone_gain / 0.32 if notes else 1.0)
+
+    length = max(voice.size, tones.size)
+    out = np.zeros(length, dtype=np.float32)
+    out[: voice.size] += voice
+    out[: tones.size] += tones
+
+    peak = float(np.max(np.abs(out))) if out.size else 0.0
+    if peak > 1.0:
+        out /= peak
+    return out
+
+
 def device_sample_rate(fallback: int = SAMPLE_RATE) -> int:
     """The default output device's native rate.
 
@@ -122,12 +161,17 @@ class Player:
         return self._cursor / self.sample_rate
 
     def play(self, notes: list[Note]) -> None:
-        """Start playing. Restarts cleanly if already playing."""
+        """Start playing the transcription. Restarts cleanly if already playing."""
+        rate = self._requested_rate or device_sample_rate()
+        self.play_audio(render(notes, rate), rate)
+
+    def play_audio(self, buffer: np.ndarray, rate: int | None = None) -> None:
+        """Start playing an arbitrary mono buffer."""
         import sounddevice as sd
 
         self.stop()
-        self.sample_rate = self._requested_rate or device_sample_rate()
-        buffer = render(notes, self.sample_rate)
+        self.sample_rate = rate or self._requested_rate or device_sample_rate()
+        buffer = np.asarray(buffer, dtype=np.float32)
         if buffer.size == 0:
             return
 
