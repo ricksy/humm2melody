@@ -7,7 +7,7 @@ most, because several of these are smaller than they look.
 Written to be picked up cold: assume the reader has not seen the conversation
 that produced them.
 
-## Status at v0.8.0
+## Status at v0.9.0
 
 | # | Item | State |
 | --- | --- | --- |
@@ -17,15 +17,20 @@ that produced them.
 | 3 | Refresh the blog post | **stale** — the post still describes v0.1 |
 | 4 | Rhythm and quantisation | not started — the hard half already exists |
 | 5 | Compressed audio storage | **done in v0.6.0** |
-| 6 | MIDI / MusicXML export | not started — small and self-contained |
-| 7 | Key detection and transposition | not started — the logic exists, unsurfaced |
-| 8 | Smaller items | mixed, see below |
+| 6 | Finish note editing | **next** — insert, delete, undo |
+| 7 | MIDI / MusicXML export | not started — small and self-contained |
+| 8 | Key detection and transposition | not started — the logic exists, unsurfaced |
+| 9 | Smaller items | mixed, see below |
 
 Shipped since this file was written: profiles and tabs (v0.5.0), FLAC and MP3
 storage (v0.6.0), calibration (v0.7.0), and a fix for the `analyze` command's
 defaults having drifted out of sync with the app.
 
-**Recommended next:** item 2, training mode. Calibration now supplies what it
+**Recommended next:** item 6. Editing is half-built: without insert and delete
+it cannot fix the transcriptions that most need fixing, and without undo a
+mistyped key is permanent.
+
+After that, item 2, training mode. Calibration now supplies what it
 was missing — a per-user notion of what "correct" means, and a reference melody
 with scoring that already measures accuracy in cents.
 
@@ -177,7 +182,40 @@ current format and falls back to the older one.
 
 ---
 
-## 6. Export
+## 6. Finish note editing
+
+Editing exists (v0.9.0) but only for notes that were already detected: pick one
+with the arrows, move it by a semitone or an octave, nudge it in time, change
+its length. Three things are missing, all of them now small because the hard
+parts — selection, the focus trick that frees up the keys, and write-back to
+the run — are already there.
+
+**Insert a missed note.** Detection drops notes that were too quiet or too
+short. There is currently no way to add one back, which makes editing useless
+for exactly the transcriptions that need it most. Shape: a key that inserts a
+note at the playhead, or after the selection, taking the selected note's pitch
+as a starting point.
+
+**Delete a spurious note.** The mirror case: breath noise or a glide artefact
+becomes a note that should not be there. Today the only remedy is to turn the
+dials and re-segment, which changes every other note too.
+
+**Undo.** There is none, and edits write straight through to the run's
+`notes.json`. A wrong keypress is currently permanent. A simple undo stack of
+note lists would do — the lists are small and immutable, so snapshotting them
+costs nothing.
+
+Worth doing together, since all three want the same edit-history structure.
+
+**Already in place.** `Note` is a frozen dataclass, so every edit already
+produces a new list rather than mutating in place — which is exactly what an
+undo stack needs. `SessionStore.update_notes` handles persistence and
+re-renders the playback. The recording is never touched by an edit, so nothing
+here can corrupt the source audio.
+
+---
+
+## 7. Export
 
 No MIDI or MusicXML output. `notes.json` has everything required — MIDI number,
 start, end, duration — so an export is a small, self-contained piece of work.
@@ -185,7 +223,7 @@ MIDI first; it is what would actually get used.
 
 ---
 
-## 7. Key detection and transposition
+## 8. Key detection and transposition
 
 The app reports absolute pitch. Someone humming "do re mi" in a comfortable key
 gets a correct transcription that does not look like what they expected.
@@ -196,11 +234,8 @@ Would show: detected key, and an option to transpose to C or to a chosen key.
 
 ---
 
-## 8. Smaller items
+## 9. Smaller items
 
-- **Editing is per note.** There is no way to insert a note that was missed
-  entirely, delete a spurious one, or undo an edit. Adding those is
-  straightforward now that the selection and write-back exist.
 - **Starred-first sorting, or a favourites filter.** Deliberately not done: the
   list stays newest-first so a fresh recording never appears below older
   favourites. Easy now that the flag is persisted.
