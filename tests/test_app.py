@@ -1033,8 +1033,12 @@ async def test_a_full_calibration_run_reaches_a_result(tmp_path: Path):
         assert set(app.cal_frames) == {"low", "high", "scale"}
 
 
-async def test_an_unusable_take_changes_nothing(tmp_path: Path):
-    """The fake recorder returns C4-E4-G4, which is not the melody."""
+async def test_an_unconfident_take_is_offered_not_discarded(tmp_path: Path):
+    """The fake recorder returns C4-E4-G4, which is not the melody.
+
+    Nothing is adopted automatically, but the result is kept on screen with
+    the option to take it: imperfect settings still beat none.
+    """
     store = ProfileStore(tmp_path / "profiles")
     app = make_app(tmp_path, profile=store.create("Ahmed"))
     async with app.run_test() as pilot:
@@ -1046,8 +1050,75 @@ async def test_an_unusable_take_changes_nothing(tmp_path: Path):
         await pilot.pause()
 
         assert app.cal_result.confident is False
+        assert app.cal_saved is False
         assert (app.sensitivity, app.pause_sensitivity) == before
         assert app.profile.calibration.is_empty is True
+
+        body = str(app.query_one("#calibrate-body", Static).content)
+        assert "keep it anyway" in body
+        assert "try again" in body
+
+
+async def test_y_keeps_an_unconfident_calibration(tmp_path: Path):
+    store = ProfileStore(tmp_path / "profiles")
+    app = make_app(tmp_path, profile=store.create("Ahmed"))
+    async with app.run_test() as pilot:
+        await goto_calibrate(app, pilot)
+        for _ in range(3):
+            await pilot.press("space")
+            await pilot.press("space")
+        await pilot.pause()
+
+        await pilot.press("y")
+        await pilot.pause()
+
+        assert app.cal_saved is True
+        assert app.profile.calibration.is_empty is False
+        assert store.list()[0].calibration.is_empty is False
+
+
+async def test_keeping_is_only_offered_once(tmp_path: Path):
+    store = ProfileStore(tmp_path / "profiles")
+    app = make_app(tmp_path, profile=store.create("Ahmed"))
+    async with app.run_test() as pilot:
+        await goto_calibrate(app, pilot)
+        for _ in range(3):
+            await pilot.press("space")
+            await pilot.press("space")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+
+        body = str(app.query_one("#calibrate-body", Static).content)
+        assert "saved to your profile" in body
+        assert "keep it anyway" not in body
+
+
+async def test_y_does_nothing_without_a_result(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await goto_calibrate(app, pilot)
+        await pilot.press("y")
+        await pilot.pause()
+        assert app.cal_saved is False
+
+
+async def test_measurements_are_kept_even_from_a_poor_take(tmp_path: Path):
+    """Range and tuning do not depend on the melody being matched."""
+    store = ProfileStore(tmp_path / "profiles")
+    app = make_app(tmp_path, profile=store.create("Ahmed"))
+    async with app.run_test() as pilot:
+        await goto_calibrate(app, pilot)
+        for _ in range(3):
+            await pilot.press("space")
+            await pilot.press("space")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+
+        saved = store.list()[0].calibration
+        assert saved.tuning_offset_cents is not None
+        assert saved.typical_drift_cents is not None
 
 
 async def test_c_resets_calibration(tmp_path: Path):

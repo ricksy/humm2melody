@@ -476,6 +476,7 @@ class CalibrationPane(Static):
         result=None,
         live: str = "",
         profile=None,
+        saved: bool = False,
     ) -> None:
         from .calibration import STEPS, describe
 
@@ -529,12 +530,22 @@ class CalibrationPane(Static):
             text.append("\n   ")
             style = "green" if result.confident else "yellow"
             text.append(result.message + "\n", style=style)
-            if result.confident and profile is not None and profile.is_guest:
+
+            if profile is not None and profile.is_guest:
                 text.append(
                     "   Guest session, so this applies now but is not saved.\n",
                     style="dim",
                 )
-            text.append("\n   press space to calibrate again\n", style="dim")
+            text.append("\n")
+            if saved:
+                text.append("   ✓ saved to your profile\n", style="green")
+                text.append("   press space to calibrate again\n", style="dim")
+            else:
+                text.append("   y  keep it anyway", style="bold")
+                text.append(
+                    "     — imperfect settings still beat none\n", style="dim"
+                )
+                text.append("   space  try again\n", style="bold")
 
         self.update(text)
 
@@ -753,6 +764,7 @@ class Humm2MelodyApp(App):
         ("full_stop", "more_pauses", "Pauses +"),
         ("m", "cycle_source", "Compare"),
         ("l", "play_reference", "Hear melody"),
+        ("y", "keep_calibration", "Keep calibration"),
         ("minus", "less_tones", "More hum"),
         ("equals_sign", "more_tones", "More tones"),
         ("c", "clear", "Clear"),
@@ -793,6 +805,7 @@ class Humm2MelodyApp(App):
         self.cal_takes: dict[str, str] = {}
         self.cal_frames: dict[str, list[PitchFrame]] = {}
         self.cal_result = None
+        self.cal_saved = False
         self.audio = None
         self.audio_rate = 0
         self.sessions: list[Session] = []
@@ -1139,6 +1152,7 @@ class Humm2MelodyApp(App):
             result=self.cal_result,
             live=live,
             profile=self.profile,
+            saved=self.cal_saved,
         )
 
     def _reset_calibration(self) -> None:
@@ -1146,6 +1160,7 @@ class Humm2MelodyApp(App):
         self.cal_takes = {}
         self.cal_frames = {}
         self.cal_result = None
+        self.cal_saved = False
         self._refresh_calibration()
 
     def _toggle_calibration(self) -> None:
@@ -1206,10 +1221,28 @@ class Humm2MelodyApp(App):
         )
         self.cal_result = result
         self.cal_step = None
+        self.cal_saved = False
 
-        if not result.confident:
-            # A wrong calibration is worse than none, so keep what we had.
+        if result.confident:
+            self._keep_calibration()
+        else:
+            # Offer it rather than discarding it: the range, tuning and
+            # steadiness were measured from the singing itself and hold
+            # regardless, and settings that are merely imperfect still beat
+            # having none.
             self._set_hint(Text(result.message, style="yellow"))
+
+    def action_keep_calibration(self) -> None:
+        """Adopt a calibration the app was not fully confident about."""
+        if self._active_tab() != "tab-calibrate" or self.recorder.running:
+            return
+        if self.cal_result is None or self.cal_saved:
+            return
+        self._keep_calibration()
+
+    def _keep_calibration(self) -> None:
+        result = self.cal_result
+        if result is None:
             return
 
         self.sensitivity = result.pitch_dial
@@ -1223,9 +1256,11 @@ class Humm2MelodyApp(App):
             if dial is not None:
                 dial.show(value)
         self._remember_dials()
+        self.cal_saved = True
         if self.frames:
             self._resegment()
         self._set_hint(result.message)
+        self._refresh_calibration()
 
     def action_play_reference(self) -> None:
         """Play the tune the user is being asked to sing back."""

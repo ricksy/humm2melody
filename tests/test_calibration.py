@@ -309,11 +309,12 @@ def test_a_bad_take_is_refused_rather_than_guessed():
     assert "try again" in result.message.lower()
 
 
-def test_the_refusal_message_says_which_problem_it_was():
+def test_the_message_says_which_problem_it_was():
     """A message that contradicts itself is worse than no message."""
     wrong_count = calibrate(
         analyse(held(48)), analyse(held(67)), analyse(held(60, 3.0))
     )
+    assert wrong_count.structure_ok is False
     assert "but the melody has" in wrong_count.message
 
     wrong_tune = calibrate(
@@ -321,14 +322,47 @@ def test_the_refusal_message_says_which_problem_it_was():
         analyse(held(67)),
         analyse(sung_back(errors=[0, 5, -7, 4, -6, 8, -5])),
     )
-    if not wrong_tune.confident and len(wrong_tune.detected) == SCALE_LENGTH:
-        assert "did not sound like the melody" in wrong_tune.message
+    if not wrong_tune.confident and wrong_tune.structure_ok:
+        assert "off the melody" in wrong_tune.message
+        assert "dial settings are still sound" in wrong_tune.message
 
 
-def test_missing_range_notes_are_refused():
+def test_measurements_survive_a_poor_reply():
+    """Range, tuning and steadiness do not depend on matching the melody."""
+    result = calibrate(
+        analyse(held(48)),
+        analyse(held(67)),
+        analyse(sung_back(errors=[0, 5, -7, 4, -6, 8, -5])),
+    )
+    assert result.calibration.range_low_midi == 48
+    assert result.calibration.range_high_midi == 67
+    assert result.calibration.tuning_offset_cents is not None
+    assert result.calibration.typical_drift_cents is not None
+
+
+def test_accuracy_is_withheld_only_when_it_cannot_be_computed():
+    """With the wrong note count there is nothing to pair up."""
+    bad_count = calibrate(
+        analyse(held(48)), analyse(held(67)), analyse(held(60, 3.0))
+    )
+    assert bad_count.calibration.pitch_accuracy_cents is None
+
+    poor_but_pairable = calibrate(
+        analyse(held(48)),
+        analyse(held(67)),
+        analyse(sung_back(errors=[0, 5, -7, 4, -6, 8, -5])),
+    )
+    if poor_but_pairable.structure_ok:
+        assert poor_but_pairable.calibration.pitch_accuracy_cents is not None
+
+
+def test_missing_range_notes_do_not_discard_the_rest():
+    """A missing range note is not a reason to throw away a good reply."""
     quiet = [PitchFrame(i * 0.02, 0.0, 0.0, 0.0) for i in range(120)]
     result = calibrate(quiet, quiet, analyse(sung_back()))
-    assert result.confident is False
+    assert result.calibration.range_low_midi is None
+    assert result.calibration.tuning_offset_cents is not None
+    assert result.structure_ok is True
 
 
 # -- the summary rows ------------------------------------------------------

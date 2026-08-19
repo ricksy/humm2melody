@@ -107,6 +107,15 @@ class Result:
     detected: list[str]
     confident: bool
     message: str
+    structure_ok: bool = False
+    """Whether one note per reference note was heard.
+
+    Separate from `confident`, because they gate different things. Without the
+    right count there is nothing to pair up and the dial suggestion is a guess.
+    With the right count but a poorly pitched reply, the dials are still sound
+    -- the structure was recovered -- and only the accuracy figure is a
+    judgement on the singing rather than on the app.
+    """
 
     @property
     def range_semitones(self) -> int:
@@ -228,31 +237,38 @@ def calibrate(
     midis = voiced_midis(scale_frames)
     tuning = tuning_offset_semitones(midis) * 100.0 if midis.size else 0.0
 
+    structure_ok = len(detected) == SCALE_LENGTH
+
+    # Range, tuning, steadiness and style are measured from the singing itself
+    # and do not depend on the melody being matched, so they are always
+    # trustworthy. Accuracy and register are comparisons against the reference
+    # and mean nothing without one note per reference note to pair up.
     calibration = Calibration(
         range_low_midi=low,
         range_high_midi=high,
         tuning_offset_cents=round(tuning, 1),
         typical_drift_cents=round(report.note_cents_spread, 1),
         glide_fraction=round(report.glide_fraction, 3),
-        pitch_accuracy_cents=round(accuracy, 1) if confident else None,
-        transpose_semitones=transpose if confident else None,
+        pitch_accuracy_cents=round(accuracy, 1) if structure_ok else None,
+        transpose_semitones=transpose if structure_ok else None,
         measured_at=measured_at,
     )
 
-    if not confident and len(detected) != SCALE_LENGTH:
+    if not structure_ok:
         message = (
-            f"Heard {len(detected)} notes, but the melody has {SCALE_LENGTH}. "
-            "Nothing was saved — try again, holding each note a little longer "
-            "and leaving a clear gap between them."
+            f"Heard {len(detected)} notes, but the melody has {SCALE_LENGTH}, "
+            "so the dial settings are only a guess. Try again holding each "
+            "note longer with a clear gap, or save what was measured anyway."
         )
     elif not confident:
         message = (
-            f"That did not sound like the melody — about {accuracy:.0f} cents "
-            "off on average. Nothing was saved. Press l to hear it again."
+            f"The reply was about {accuracy:.0f} cents off the melody, so the "
+            "accuracy figure says more about the singing than the app. The "
+            "dial settings are still sound — the right number of notes came "
+            "through."
         )
     elif low is None or high is None:
-        message = "Could not hear the range notes. Nothing was saved."
-        confident = False
+        message = "Could not hear the range notes, but the rest was measured."
     else:
         message = (
             f"Range {midi_to_name(low)}–{midi_to_name(high)}, "
@@ -266,6 +282,7 @@ def calibrate(
         detected=detected,
         confident=confident,
         message=message,
+        structure_ok=structure_ok,
     )
 
 
