@@ -28,7 +28,7 @@ from textual.widgets import (
 from .audio import AudioError, Recorder
 from .calibration import STEPS as CALIBRATION_STEPS
 from .calibration import GLOBAL_FMAX, GLOBAL_FMIN, calibrate, voice_bounds
-from .pitch import NOTE_NAMES, midi_to_hz
+from .pitch import NOTE_NAMES, hz_to_midi, midi_to_hz
 from .naming import SCHEMES, get_scheme, next_scheme, spell
 from .playback import MIX_DEFAULT, MIX_MAX, MIX_MIN, Player, mix_hum_with_tones
 from .profiles import DEFAULT_PROFILE_DIR, Profile, ProfileStore, guest
@@ -232,6 +232,11 @@ class PianoRoll(Static):
         ("full_stop", "shift(1)", "Later"),
         ("minus", "resize(-1)", "Shorter"),
         ("equals_sign", "resize(1)", "Longer"),
+        ("i", "insert", "Insert"),
+        ("delete", "remove", "Delete"),
+        ("backspace", "remove", "Delete"),
+        ("z", "undo", "Undo"),
+        ("shift+z", "redo", "Redo"),
         ("escape", "done", "Done editing"),
     ]
 
@@ -246,6 +251,18 @@ class PianoRoll(Static):
 
     def action_resize(self, direction: int) -> None:
         self.app.edit_resize(direction)
+
+    def action_insert(self) -> None:
+        self.app.edit_insert()
+
+    def action_remove(self) -> None:
+        self.app.edit_remove()
+
+    def action_undo(self) -> None:
+        self.app.edit_undo()
+
+    def action_redo(self) -> None:
+        self.app.edit_redo()
 
     def action_done(self) -> None:
         self.app.action_edit_notes()
@@ -1069,6 +1086,8 @@ class Humm2MelodyApp(App):
         self.editing = False
         self.selected_note: int | None = None
         self.current_session: Session | None = None
+        self.undo_stack: list[list[Note]] = []
+        self.redo_stack: list[list[Note]] = []
         self.audio = None
         self.audio_rate = 0
         self.sessions: list[Session] = []
@@ -1392,6 +1411,8 @@ class Humm2MelodyApp(App):
         self.current_session = session
         self.editing = False
         self.selected_note = None
+        self.undo_stack.clear()
+        self.redo_stack.clear()
         self.frames = read_pitch_track(session.pitch_track_path)
         self.audio, self.audio_rate = None, 0
         if session.hum_path.is_file():
@@ -1414,25 +1435,34 @@ class Humm2MelodyApp(App):
 
     # -- editing -----------------------------------------------------------
 
+    UNDO_DEPTH = 50
     NUDGE = 0.05
     """Seconds a note moves or grows per keypress."""
 
     MIN_DURATION = 0.05
 
+    DEFAULT_NEW_DURATION = 0.35
+    INSERT_GAP = 0.05
+
     def action_edit_notes(self) -> None:
         """Toggle note editing, which hands the arrow keys to the timeline."""
-        if self._active_tab() != "tab-record" or not self.notes:
+        if self._active_tab() != "tab-record":
+            return
+        # Allowed with nothing detected, so a transcription that came back
+        # empty can still be built up by hand rather than only re-recorded.
+        if not self.notes and self.audio is None and not self.frames:
             return
 
         self.editing = not self.editing
         roll = self._find("#roll", PianoRoll)
         if self.editing:
-            if self.selected_note is None:
+            if self.selected_note is None and self.notes:
                 self.selected_note = 0
             if roll is not None:
                 roll.focus()
             self._set_hint(
-                "Editing — ← → pick · ↑ ↓ pitch · , . move · - = length · esc done"
+                "← → pick · ↑ ↓ pitch · , . move · - = length · "
+                "i add · del remove · z undo · esc done"
             )
         else:
             runs = self._find("#runs", ListView)
@@ -1447,6 +1477,38 @@ class Humm2MelodyApp(App):
         current = self.selected_note or 0
         self.selected_note = max(0, min(len(self.notes) - 1, current + delta))
         self._show_notes(self.notes)
+
+    def _push_undo(self) -> None:
+        """Snapshot the notes before changing them.
+
+        Cheap: Note is frozen, so a snapshot is a new list of the same objects
+        rather than a copy of anything. Edits write straight through to the
+        run, so without this a mistyped key would be permanent.
+        """
+        self.undo_stack.append(list(self.notes))
+        del self.undo_stack[:-self.UNDO_DEPTH]
+        self.redo_stack.clear()
+
+    def _commit(self, notes: list[Note], keep: Note | None) -> None:
+        """Adopt an edited note list, keeping `keep` selected.
+
+        Sorted by start time, because moving a note past its neighbour would
+        otherwise leave the sequence and the table reading out of order. The
+        selection follows the note itself rather than its index, which the
+        sort may well have changed.
+        """
+        notes = sorted(notes, key=lambda n: n.start)
+        self.notes = notes
+        if keep is None:
+            self.selected_note = None if not notes else min(
+                self.selected_note or 0, len(notes) - 1
+            )
+        else:
+            self.selected_note = next(
+                (i for i, n in enumerate(notes) if n is keep), None
+            )
+        self._show_notes(self.notes)
+        self._save_edited_notes()
 
     def _replace_selected(self, **changes) -> None:
         """Rewrite the chosen note. Notes are frozen, so this makes a new one."""
@@ -1464,9 +1526,77 @@ class Humm2MelodyApp(App):
             "attack": note.attack,
         }
         fields.update(changes)
-        self.notes[index] = Note(**fields)
-        self._show_notes(self.notes)
-        self._save_edited_notes()
+        self._push_undo()
+        replacement = Note(**fields)
+        notes = list(self.notes)
+        notes[index] = replacement
+        self._commit(notes, replacement)
+
+    def _default_pitch(self) -> int:
+        """A sensible pitch for a note being added from nothing."""
+        if self.notes:
+            index = self.selected_note or 0
+            return self.notes[min(index, len(self.notes) - 1)].midi
+        voiced = [f.freq for f in self.frames if f.voiced and f.confidence >= 0.55]
+        if voiced:
+            import numpy as np
+
+            return int(round(hz_to_midi(float(np.median(voiced)))))
+        return 60
+
+    def edit_insert(self) -> None:
+        """Add a note detection missed, after the selected one."""
+        if not self.editing:
+            return
+
+        midi = self._default_pitch()
+        if self.notes and self.selected_note is not None:
+            after = self.notes[self.selected_note]
+            start = after.end + self.INSERT_GAP
+            length = after.duration
+        else:
+            start, length = 0.0, self.DEFAULT_NEW_DURATION
+
+        added = Note(
+            midi=midi,
+            start=start,
+            end=start + length,
+            freq=midi_to_hz(midi),
+            confidence=1.0,
+            pitch=float(midi),
+            attack=True,
+        )
+        self._push_undo()
+        self._commit(self.notes + [added], added)
+        self._set_hint(f"Added {spell(midi, self.notation)} — move it with , . ↑ ↓")
+
+    def edit_remove(self) -> None:
+        """Drop a note that should not be there."""
+        if not self.editing or self.selected_note is None or not self.notes:
+            return
+        index = self.selected_note
+        gone = self.notes[index]
+        self._push_undo()
+        remaining = [n for n in self.notes if n is not gone]
+        self.selected_note = min(index, len(remaining) - 1) if remaining else None
+        self._commit(remaining, None)
+        self._set_hint(f"Removed {spell(gone.midi, self.notation)} — z to undo")
+
+    def edit_undo(self) -> None:
+        if not self.editing or not self.undo_stack:
+            self._set_hint("Nothing to undo.")
+            return
+        self.redo_stack.append(list(self.notes))
+        self._commit(self.undo_stack.pop(), None)
+        self._set_hint("Undone.")
+
+    def edit_redo(self) -> None:
+        if not self.editing or not self.redo_stack:
+            self._set_hint("Nothing to redo.")
+            return
+        self.undo_stack.append(list(self.notes))
+        self._commit(self.redo_stack.pop(), None)
+        self._set_hint("Redone.")
 
     def edit_transpose(self, semitones: int) -> None:
         if not self.editing:
@@ -1998,6 +2128,8 @@ class Humm2MelodyApp(App):
     def _clear_results(self) -> None:
         self.editing = False
         self.selected_note = None
+        self.undo_stack.clear()
+        self.redo_stack.clear()
         self.current_session = None
         self.notes = []
         self.frames = []

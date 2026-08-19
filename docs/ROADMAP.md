@@ -17,7 +17,7 @@ that produced them.
 | 3 | Refresh the blog post | **stale** — the post still describes v0.1 |
 | 4 | Rhythm and quantisation | not started — the hard half already exists |
 | 5 | Compressed audio storage | **done in v0.6.0** |
-| 6 | Finish note editing | **next** — insert, delete, undo |
+| 6 | Finish note editing | **done in v0.10.0** |
 | 7 | MIDI / MusicXML export | not started — small and self-contained |
 | 8 | Key detection and transposition | not started — the logic exists, unsurfaced |
 | 9 | Smaller items | mixed, see below |
@@ -26,11 +26,8 @@ Shipped since this file was written: profiles and tabs (v0.5.0), FLAC and MP3
 storage (v0.6.0), calibration (v0.7.0), and a fix for the `analyze` command's
 defaults having drifted out of sync with the app.
 
-**Recommended next:** item 6. Editing is half-built: without insert and delete
-it cannot fix the transcriptions that most need fixing, and without undo a
-mistyped key is permanent.
-
-After that, item 2, training mode. Calibration now supplies what it
+**Recommended next:** item 2, training mode — or item 3, the blog post, which
+is now ten versions out of date. Calibration now supplies what it
 was missing — a per-user notion of what "correct" means, and a reference melody
 with scoring that already measures accuracy in cents.
 
@@ -182,36 +179,18 @@ current format and falls back to the older one.
 
 ---
 
-## 6. Finish note editing
+## 6. Note editing — done in v0.10.0
 
-Editing exists (v0.9.0) but only for notes that were already detected: pick one
-with the arrows, move it by a semitone or an octave, nudge it in time, change
-its length. Three things are missing, all of them now small because the hard
-parts — selection, the focus trick that frees up the keys, and write-back to
-the run — are already there.
+Insert (`i`), delete (`del`), and undo/redo (`z` / `shift+z`, 50 deep) joined
+the pitch and timing edits from v0.9.0. Editing also works from an empty
+transcription, which is the case most worth building by hand.
 
-**Insert a missed note.** Detection drops notes that were too quiet or too
-short. There is currently no way to add one back, which makes editing useless
-for exactly the transcriptions that need it most. Shape: a key that inserts a
-note at the playhead, or after the selection, taking the selected note's pitch
-as a starting point.
+Notes are re-sorted by start time after every edit and the selection follows
+the note rather than its index, so nudging one past its neighbour cannot leave
+the table out of order.
 
-**Delete a spurious note.** The mirror case: breath noise or a glide artefact
-becomes a note that should not be there. Today the only remedy is to turn the
-dials and re-segment, which changes every other note too.
-
-**Undo.** There is none, and edits write straight through to the run's
-`notes.json`. A wrong keypress is currently permanent. A simple undo stack of
-note lists would do — the lists are small and immutable, so snapshotting them
-costs nothing.
-
-Worth doing together, since all three want the same edit-history structure.
-
-**Already in place.** `Note` is a frozen dataclass, so every edit already
-produces a new list rather than mutating in place — which is exactly what an
-undo stack needs. `SessionStore.update_notes` handles persistence and
-re-renders the playback. The recording is never touched by an edit, so nothing
-here can corrupt the source audio.
+**Still open.** No multi-select, no copy or paste, no way to edit a run without
+loading it first.
 
 ---
 

@@ -1576,3 +1576,233 @@ async def test_editing_leaves_the_recording_alone(tmp_path: Path):
         await pilot.pause()
 
         assert (run / PITCH_CSV).read_bytes() == before
+
+
+# -- insert, delete, undo --------------------------------------------------
+
+
+async def test_i_inserts_a_note_after_the_selection(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        before = len(app.notes)
+        await pilot.press("e")
+        await pilot.press("i")
+        await pilot.pause()
+
+        assert len(app.notes) == before + 1
+        added = app.notes[app.selected_note]
+        assert added.start > app.notes[0].start
+
+
+async def test_an_inserted_note_takes_the_selected_pitch(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        pitch = app.notes[0].midi
+        await pilot.press("i")
+        await pilot.pause()
+        assert app.notes[app.selected_note].midi == pitch
+
+
+async def test_an_inserted_note_can_be_moved_and_retuned(tmp_path: Path):
+    """Insert is only useful if the new note is then editable like any other."""
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        await pilot.press("i")
+        await pilot.pause()
+        pitch = app.notes[app.selected_note].midi
+
+        await pilot.press("up")
+        await pilot.press("full_stop")
+        await pilot.pause()
+        assert app.notes[app.selected_note].midi == pitch + 1
+
+
+async def test_notes_stay_in_time_order_after_editing(tmp_path: Path):
+    """Moving a note past its neighbour must not leave the table out of order."""
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        for _ in range(30):
+            await pilot.press("full_stop")
+        await pilot.pause()
+
+        starts = [n.start for n in app.notes]
+        assert starts == sorted(starts)
+
+
+async def test_the_selection_follows_a_note_that_moved(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        await pilot.press("up")
+        await pilot.pause()
+        moved = app.notes[app.selected_note].midi
+
+        for _ in range(30):
+            await pilot.press("full_stop")
+        await pilot.pause()
+        assert app.notes[app.selected_note].midi == moved
+
+
+async def test_delete_removes_the_selected_note(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        before = [n.name for n in app.notes]
+        await pilot.press("e")
+        await pilot.press("right")
+        await pilot.press("delete")
+        await pilot.pause()
+
+        assert len(app.notes) == len(before) - 1
+        assert before[1] not in [n.name for n in app.notes]
+
+
+async def test_backspace_deletes_too(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        before = len(app.notes)
+        await pilot.press("e")
+        await pilot.press("backspace")
+        await pilot.pause()
+        assert len(app.notes) == before - 1
+
+
+async def test_deleting_everything_is_survivable(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        for _ in range(6):
+            await pilot.press("delete")
+        await pilot.pause()
+        assert app.notes == []
+        assert app.selected_note is None
+
+
+async def test_undo_restores_a_deleted_note(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        before = [n.name for n in app.notes]
+        await pilot.press("e")
+        await pilot.press("delete")
+        await pilot.press("z")
+        await pilot.pause()
+        assert [n.name for n in app.notes] == before
+
+
+async def test_undo_reverses_a_pitch_change(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        before = app.notes[0].midi
+        await pilot.press("e")
+        await pilot.press("up")
+        await pilot.press("up")
+        await pilot.press("z")
+        await pilot.pause()
+        assert app.notes[0].midi == before + 1
+
+
+async def test_undo_walks_back_through_several_edits(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        before = [(n.midi, n.start) for n in app.notes]
+        await pilot.press("e")
+        await pilot.press("up")
+        await pilot.press("i")
+        await pilot.press("delete")
+        for _ in range(3):
+            await pilot.press("z")
+        await pilot.pause()
+        assert [(n.midi, n.start) for n in app.notes] == before
+
+
+async def test_redo_reapplies_an_undone_edit(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        await pilot.press("up")
+        raised = app.notes[0].midi
+        await pilot.press("z")
+        await pilot.press("shift+z")
+        await pilot.pause()
+        assert app.notes[0].midi == raised
+
+
+async def test_a_new_edit_clears_the_redo_history(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        await pilot.press("up")
+        await pilot.press("z")
+        await pilot.press("down")
+        await pilot.press("shift+z")
+        await pilot.pause()
+        assert app.redo_stack == []
+
+
+async def test_undo_with_nothing_to_undo_says_so(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        await pilot.press("z")
+        await pilot.pause()
+        assert "Nothing to undo" in str(app.query_one("#hint", Static).content)
+
+
+async def test_a_new_recording_starts_a_fresh_history(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        await pilot.press("up")
+        await pilot.pause()
+        assert app.undo_stack
+
+        await record_once(pilot)
+        assert app.undo_stack == []
+
+
+async def test_editing_works_when_nothing_was_detected(tmp_path: Path):
+    """The empty transcription is exactly the one worth building by hand."""
+    quiet = [PitchFrame(i * 0.02, 0.0, 0.0, 0.0) for i in range(60)]
+    app = make_app(tmp_path, frames=quiet)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        assert app.notes == []
+
+        await pilot.press("e")
+        assert app.editing is True
+        await pilot.press("i")
+        await pilot.pause()
+
+        assert len(app.notes) == 1
+        assert app.notes[0].start == 0.0
+
+
+async def test_insert_and_delete_reach_the_saved_run(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        await pilot.press("i")
+        await pilot.pause()
+        assert len(app.store.list()[0].notes) == len(app.notes)
+
+        await pilot.press("delete")
+        await pilot.pause()
+        assert len(app.store.list()[0].notes) == len(app.notes)
