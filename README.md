@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (274 tests, no microphone required). But treat it
+> It works, and it is tested (325 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
@@ -51,10 +51,31 @@ The interface has three tabs:
 | Tab | What it does |
 | --- | --- |
 | **Recording** | everything described below — hum, transcribe, play back, keep runs |
-| **Calibrating** | placeholder: learn your voice once and set the dials from it |
+| **Calibrating** | learn your voice once, and set the dials from it |
 | **Training** | placeholder: help your voice get steadier |
 
-The two placeholders explain what they are for. See `docs/ROADMAP.md`.
+### Calibrating
+
+Three short recordings, driven entirely by `space`:
+
+1. your lowest comfortable note
+2. your highest comfortable note
+3. a familiar tune — press `l` to hear it, then sing it back
+
+The app then searches every dial combination for the pair that best recovers
+the melody, and adopts it. What it learns is saved to your profile: range,
+tuning offset, how much you drift while holding a note, how much you slide
+between notes, your accuracy against the melody in cents, and which register
+you naturally sang in.
+
+Everything is compared as **intervals**. If you sing the tune an octave down
+because that is where your voice sits, that is a correct performance — it is
+reported ("you sang it 1 octave down"), not counted against you.
+
+If no setting recovers the melody, it says so and **saves nothing**. A wrong
+calibration is worse than none.
+
+The Training tab is still a placeholder. See `docs/ROADMAP.md`.
 
 ## Requirements
 

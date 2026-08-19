@@ -824,12 +824,12 @@ async def test_the_recording_tab_holds_the_existing_ui(tmp_path: Path):
             assert pane.query(selector)
 
 
-async def test_the_placeholder_tabs_explain_themselves(tmp_path: Path):
+async def test_the_other_tabs_explain_themselves(tmp_path: Path):
     app = make_app(tmp_path)
     async with app.run_test():
         calibrate = str(app.query_one("#calibrate-body", Static).content)
         train = str(app.query_one("#train-body", Static).content)
-        assert "Calibrating" in calibrate and "Not built yet" in calibrate
+        assert "Teach the app your voice" in calibrate
         assert "Training" in train and "Not built yet" in train
 
 
@@ -974,3 +974,132 @@ async def test_a_profile_can_be_selected_from_the_chooser(tmp_path: Path):
         await pilot.pause()
         assert app.profile.name == "Ahmed"
         assert app.profile.is_guest is False
+
+
+# -- calibration -----------------------------------------------------------
+
+
+async def goto_calibrate(app, pilot):
+    """Switch tabs the way a user does.
+
+    Assigning TabbedContent.active directly does not stick: the underlying
+    Tabs widget uses prefixed ids and reverts the change on the next refresh.
+    Driving the tab bar exercises the real path anyway, including that keys
+    still reach the app while the tab bar holds focus.
+    """
+    from textual.widgets import Tabs
+
+    app.query_one(Tabs).focus()
+    await pilot.press("right")
+    await pilot.pause()
+    assert app._active_tab() == "tab-calibrate"
+
+
+async def test_calibration_starts_idle(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await goto_calibrate(app, pilot)
+        body = str(app.query_one("#calibrate-body", Static).content)
+        assert "press space to begin" in body
+        assert app.cal_step is None
+
+
+async def test_space_drives_calibration_on_that_tab(tmp_path: Path):
+    """Space means 'go' on whichever tab is showing, not always record."""
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await goto_calibrate(app, pilot)
+        await pilot.press("space")
+        assert app.recorder.running is True
+        assert app.cal_step == 0
+        assert app.notes == []  # the recording tab was not touched
+
+        await pilot.press("space")
+        assert app.recorder.running is False
+        assert app.cal_step == 1
+        assert "low" in app.cal_frames
+
+
+async def test_a_full_calibration_run_reaches_a_result(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await goto_calibrate(app, pilot)
+        for _ in range(3):
+            await pilot.press("space")
+            await pilot.press("space")
+        await pilot.pause()
+
+        assert app.cal_result is not None
+        assert set(app.cal_frames) == {"low", "high", "scale"}
+
+
+async def test_an_unusable_take_changes_nothing(tmp_path: Path):
+    """The fake recorder returns C4-E4-G4, which is not the melody."""
+    store = ProfileStore(tmp_path / "profiles")
+    app = make_app(tmp_path, profile=store.create("Ahmed"))
+    async with app.run_test() as pilot:
+        before = (app.sensitivity, app.pause_sensitivity)
+        await goto_calibrate(app, pilot)
+        for _ in range(3):
+            await pilot.press("space")
+            await pilot.press("space")
+        await pilot.pause()
+
+        assert app.cal_result.confident is False
+        assert (app.sensitivity, app.pause_sensitivity) == before
+        assert app.profile.calibration.is_empty is True
+
+
+async def test_c_resets_calibration(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await goto_calibrate(app, pilot)
+        await pilot.press("space")
+        await pilot.press("space")
+        assert app.cal_frames
+
+        await pilot.press("c")
+        await pilot.pause()
+        assert app.cal_step is None
+        assert app.cal_frames == {}
+
+
+async def test_l_plays_the_reference_melody(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await goto_calibrate(app, pilot)
+        await pilot.press("l")
+        await pilot.pause()
+
+        assert app.player.playing is True
+        assert [n.name for n in app.player.played] == [
+            "C4", "C4", "G4", "G4", "A4", "A4", "G4"
+        ]
+
+
+async def test_the_reference_is_not_played_into_the_microphone(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await goto_calibrate(app, pilot)
+        await pilot.press("space")  # recording
+        await pilot.press("l")
+        await pilot.pause()
+
+        assert app.player.playing is False
+        assert "Finish this step" in str(app.query_one("#hint", Static).content)
+
+
+async def test_l_does_nothing_on_the_recording_tab(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("l")
+        await pilot.pause()
+        assert app.player.playing is False
+
+
+async def test_space_still_records_on_the_recording_tab(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        assert [n.name for n in app.notes] == ["C4", "E4", "G4"]
+        assert app.cal_step is None

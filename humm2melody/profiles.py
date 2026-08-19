@@ -32,6 +32,8 @@ class Calibration:
     tuning_offset_cents: float | None = None
     typical_drift_cents: float | None = None
     glide_fraction: float | None = None
+    pitch_accuracy_cents: float | None = None
+    transpose_semitones: int | None = None
     measured_at: str | None = None
 
     @property

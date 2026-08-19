@@ -7,13 +7,13 @@ most, because several of these are smaller than they look.
 Written to be picked up cold: assume the reader has not seen the conversation
 that produced them.
 
-## Status at v0.6.0
+## Status at v0.7.0
 
 | # | Item | State |
 | --- | --- | --- |
-| 0 | Calibrating and Training tabs | **scaffolded** — tabs and profiles exist, content pending |
-| 1 | Per-user vocal calibration | not started — unblocked, this is the next one |
-| 2 | Training mode | not started — needs design decisions more than code |
+| 0 | Calibrating and Training tabs | Calibrating **done**, Training still a placeholder |
+| 1 | Per-user vocal calibration | **done in v0.7.0** |
+| 2 | Training mode | not started — **next**, and now unblocked by calibration |
 | 3 | Refresh the blog post | **stale** — the post still describes v0.1 |
 | 4 | Rhythm and quantisation | not started — the hard half already exists |
 | 5 | Compressed audio storage | **done in v0.6.0** |
@@ -22,12 +22,12 @@ that produced them.
 | 8 | Smaller items | mixed, see below |
 
 Shipped since this file was written: profiles and tabs (v0.5.0), FLAC and MP3
-storage (v0.6.0), and a fix for the `analyze` command's defaults having drifted
-out of sync with the app.
+storage (v0.6.0), calibration (v0.7.0), and a fix for the `analyze` command's
+defaults having drifted out of sync with the app.
 
-**Recommended next:** item 1. It is unblocked now that profiles exist, it is the
-principled version of two recalibrations already done by hand, and item 2
-depends on it for what "correct" means.
+**Recommended next:** item 2, training mode. Calibration now supplies what it
+was missing — a per-user notion of what "correct" means, and a reference melody
+with scoring that already measures accuracy in cents.
 
 ---
 
@@ -42,41 +42,30 @@ What remains is the content, which is items 1 and 2.
 
 ---
 
-## 1. Per-user vocal calibration
+## 1. Per-user vocal calibration — done in v0.7.0
 
-**What.** Ask the user to sing a short scale, learn their voice, and set the
-dials' defaults from that instead of from global constants.
+Three prompts in the Calibrating tab: lowest comfortable note, highest, then a
+familiar tune played back and sung in reply. The app then searches all 81 dial
+combinations for the pair that best recovers the melody, and adopts it.
 
-**Why it is the most valuable item here.** Every threshold in `segment.py` was
-tuned by hand against one person's recordings. That is exactly the thing that
-should be measured per user rather than guessed once. It is also the honest
-version of a calibration already done crudely: the pitch dial was recentred
-because one user kept pushing it to 8–9.
+Two decisions worth keeping:
 
-**What it would learn.**
+- **Everything is compared as intervals.** A voice that cannot reach the
+  reference octave sings the tune transposed, and that is a correct
+  performance, not an error. The transposition is measured and reported
+  ("you sang it 1 octave down") rather than penalised.
+- **It refuses rather than guesses.** If no dial setting recovers the melody,
+  nothing is saved and it says so. A wrong calibration is worse than none, and
+  the derived numbers are left as `None` rather than reported from a reading
+  that was not trusted.
 
-| Measurement | Sets |
-| --- | --- |
-| Comfortable range (lowest/highest reliable note) | `fmin`/`fmax`, warn when out of range |
-| Typical within-note drift | pitch dial default, `max_step` |
-| Typical tuning offset | whether to trust `tuning="auto"` per run |
-| How much they slide between notes | `max_glide_rate` default |
-| How cleanly they separate repeats | pause dial default |
-| Typical loudness | `min_rms` |
+Recorded per profile: range, tuning offset, drift while holding, how much the
+voice slides, accuracy against the melody in cents, and which register it was
+sung in.
 
-**Already in place.** `analysis.py` computes nearly all of these already —
-`tuning_offset_semitones`, `glide_fraction`, `note_cents_spread`, `f0_low`,
-`f0_high`, rms percentiles. `sweep()` already searches parameters against an
-expected answer. A calibration run is largely: capture a known scale, run the
-existing diagnosis, persist the result.
-
-**Already answered.** Profiles exist: `profiles/<name>.json`, chosen at startup,
-holding dial positions and an empty `Calibration` waiting to be filled. Runs
-record which profile made them.
-
-**Still open.** Whether dials should show "your default" versus the global one.
-What happens when a new recording disagrees with the stored profile. Whether
-calibration should re-run automatically when it goes stale.
+**Still open.** Whether the dials should show "your default" versus the global
+one. What happens when a later recording disagrees with the stored profile.
+Whether calibration should prompt to re-run when it goes stale.
 
 ---
 
@@ -86,8 +75,13 @@ calibration should re-run automatically when it goes stale.
 close you are, and tells you when you are holding it.
 
 **Why.** The other half of the problem. Everything so far makes the app better
-at understanding an imperfect voice; this makes the voice better. It also feeds
-item 1 — a training session is a calibration session with feedback attached.
+at understanding an imperfect voice; this makes the voice better.
+
+**Now unblocked.** Calibration already supplies most of the missing pieces: a
+reference melody with playback, scoring against it in cents, a per-user record
+of accuracy and steadiness to set thresholds from, and a profile to store
+progress in. Training is largely calibration with feedback attached and a
+target you must hold.
 
 **Already in place.** More than it seems. The live readout already produces
 pitch, note name and cents deviation at ~43 frames/sec, and `NoteReadout`

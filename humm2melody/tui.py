@@ -25,6 +25,8 @@ from textual.widgets import (
 )
 
 from .audio import AudioError, Recorder
+from .calibration import STEPS as CALIBRATION_STEPS
+from .calibration import calibrate
 from .pitch import NOTE_NAMES
 from .playback import MIX_DEFAULT, MIX_MAX, MIX_MIN, Player, mix_hum_with_tones
 from .profiles import DEFAULT_PROFILE_DIR, Profile, ProfileStore, guest
@@ -462,31 +464,79 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-def _placeholder_calibrating() -> Text:
-    text = Text()
-    text.append("\n  Calibrating\n\n", style="bold")
-    text.append(
-        "  Not built yet. The plan is to learn your voice once and set the\n"
-        "  dials from that, instead of from thresholds hand-tuned against\n"
-        "  somebody else.\n\n",
-        style="dim",
-    )
-    text.append("  It would measure:\n\n", style="dim")
-    for line in (
-        "your comfortable range, low and high",
-        "how far you usually sit off concert pitch",
-        "how much your pitch drifts while holding a note",
-        "how much you slide between notes",
-        "how cleanly you separate repeated notes",
-    ):
-        text.append(f"    · {line}\n", style="dim")
-    text.append(
-        "\n  Most of these are already computed by the analyze command; what\n"
-        "  is missing is capturing a known scale and saving the result to\n"
-        "  your profile. See docs/ROADMAP.md.\n",
-        style="dim",
-    )
-    return text
+class CalibrationPane(Static):
+    """The Calibrating tab: three prompts, then what was learned."""
+
+    def show(
+        self,
+        *,
+        step: int | None,
+        recording: bool,
+        takes: dict,
+        result=None,
+        live: str = "",
+        profile=None,
+    ) -> None:
+        from .calibration import STEPS, describe
+
+        text = Text()
+        text.append("\n  Teach the app your voice\n\n", style="bold")
+        text.append(
+            "  Three short recordings. The app then works out the dial settings\n"
+            "  that best recover what you sang, instead of using defaults tuned\n"
+            "  for somebody else.\n\n",
+            style="dim",
+        )
+
+        for index, item in enumerate(STEPS):
+            done = item.key in takes
+            active = step == index
+            if done:
+                marker, style = "✓", "green"
+            elif active and recording:
+                marker, style = "●", HIGHLIGHT
+            elif active:
+                marker, style = "▸", "bold"
+            else:
+                marker, style = " ", "dim"
+
+            text.append(f"   {marker} ", style=style)
+            text.append(f"{index + 1}. {item.title:<34}", style=style)
+            if done:
+                text.append(takes[item.key], style="green")
+            elif active:
+                text.append(item.detail, style="dim")
+            text.append("\n")
+
+        text.append("\n")
+        if recording:
+            text.append("   ● recording — ", style=HIGHLIGHT)
+            text.append(live or "listening…", style="bold")
+            text.append("\n   press space when you have finished this step\n")
+        elif step is not None and step < len(STEPS):
+            text.append(
+                f"   press space to record step {step + 1}\n", style="bold"
+            )
+        elif result is None:
+            text.append("   press space to begin\n", style="bold")
+
+        if result is not None:
+            text.append("\n  ")
+            text.append("─" * 52 + "\n", style="dim")
+            for label, value in describe(result.calibration):
+                text.append(f"   {label:<12}", style="bold")
+                text.append(f"{value}\n")
+            text.append("\n   ")
+            style = "green" if result.confident else "yellow"
+            text.append(result.message + "\n", style=style)
+            if result.confident and profile is not None and profile.is_guest:
+                text.append(
+                    "   Guest session, so this applies now but is not saved.\n",
+                    style="dim",
+                )
+            text.append("\n   press space to calibrate again\n", style="dim")
+
+        self.update(text)
 
 
 def _placeholder_training() -> Text:
@@ -702,6 +752,7 @@ class Humm2MelodyApp(App):
         ("comma", "fewer_pauses", "Pauses −"),
         ("full_stop", "more_pauses", "Pauses +"),
         ("m", "cycle_source", "Compare"),
+        ("l", "play_reference", "Hear melody"),
         ("minus", "less_tones", "More hum"),
         ("equals_sign", "more_tones", "More tones"),
         ("c", "clear", "Clear"),
@@ -737,6 +788,11 @@ class Humm2MelodyApp(App):
         self.pause_sensitivity = PAUSE_DEFAULT
         self.source = "tones"
         self.mix = MIX_DEFAULT
+        # Calibration state: which step is next, what has been captured.
+        self.cal_step: int | None = None
+        self.cal_takes: dict[str, str] = {}
+        self.cal_frames: dict[str, list[PitchFrame]] = {}
+        self.cal_result = None
         self.audio = None
         self.audio_rate = 0
         self.sessions: list[Session] = []
@@ -776,7 +832,7 @@ class Humm2MelodyApp(App):
                         yield Static(id="run-hint")
 
             with TabPane("Calibrating", id="tab-calibrate"):
-                yield Static(_placeholder_calibrating(), id="calibrate-body")
+                yield CalibrationPane(id="calibrate-body")
 
             with TabPane("Training", id="tab-train"):
                 yield Static(_placeholder_training(), id="train-body")
@@ -789,6 +845,7 @@ class Humm2MelodyApp(App):
         self.query_one("#pause", PauseDial).show(self.pause_sensitivity)
         self.query_one("#mix", MixDial).show(self.mix)
         self._apply_profile(self.profile)
+        self._refresh_calibration()
         self.query_one("#compare", Button).label = self._source_label()
         # One key per line: the sidebar is too narrow for a single run-on line,
         # which wraps mid-word.
@@ -822,7 +879,15 @@ class Humm2MelodyApp(App):
 
     # -- recording ---------------------------------------------------------
 
+    def _active_tab(self) -> str:
+        tabs = self._find("TabbedContent", TabbedContent)
+        return tabs.active if tabs is not None else "tab-record"
+
     def action_toggle(self) -> None:
+        """Space means "go" on whichever tab is showing."""
+        if self._active_tab() == "tab-calibrate":
+            self._toggle_calibration()
+            return
         if self.recorder.running:
             self._stop_recording()
         else:
@@ -1057,6 +1122,130 @@ class Humm2MelodyApp(App):
         else:
             self._set_hint(f"Loaded {session.path.name} · this run has no notes")
 
+    # -- calibration -------------------------------------------------------
+
+    def _refresh_calibration(self) -> None:
+        pane = self._find("#calibrate-body", CalibrationPane)
+        if pane is None:
+            return
+        live = ""
+        if self.recorder.running:
+            reading = self.recorder.latest()
+            live = reading.note or "listening…"
+        pane.show(
+            step=self.cal_step,
+            recording=self.recorder.running and self.cal_step is not None,
+            takes=self.cal_takes,
+            result=self.cal_result,
+            live=live,
+            profile=self.profile,
+        )
+
+    def _reset_calibration(self) -> None:
+        self.cal_step = None
+        self.cal_takes = {}
+        self.cal_frames = {}
+        self.cal_result = None
+        self._refresh_calibration()
+
+    def _toggle_calibration(self) -> None:
+        """One key drives the whole thing: start a step, or finish it."""
+        if self.recorder.running:
+            self._finish_calibration_step()
+        else:
+            self._start_calibration_step()
+
+    def _start_calibration_step(self) -> None:
+        if self.cal_step is None or self.cal_step >= len(CALIBRATION_STEPS):
+            self._reset_calibration()
+            self.cal_step = 0
+
+        self._stop_playback()
+        try:
+            self.recorder.start()
+        except AudioError as exc:
+            self._set_hint(
+                Text(f"Could not open the microphone: {exc}", style="bold red")
+            )
+            return
+        self._record_timer = self.set_interval(1 / 10, self._refresh_calibration)
+        self._refresh_calibration()
+
+    def _finish_calibration_step(self) -> None:
+        if self._record_timer is not None:
+            self._record_timer.stop()
+            self._record_timer = None
+
+        frames = self.recorder.stop()
+        step = CALIBRATION_STEPS[self.cal_step]
+        self.cal_frames[step.key] = frames
+
+        from .calibration import measure_note
+        from .pitch import midi_to_name
+
+        if step.key == "scale":
+            self.cal_takes[step.key] = "captured"
+        else:
+            midi = measure_note(frames)
+            self.cal_takes[step.key] = midi_to_name(midi) if midi else "not heard"
+
+        self.cal_step += 1
+        if self.cal_step >= len(CALIBRATION_STEPS):
+            self._apply_calibration()
+        self._refresh_calibration()
+
+    def _apply_calibration(self) -> None:
+        """Work out the settings, and adopt them only if they are trustworthy."""
+        from datetime import datetime
+
+        result = calibrate(
+            self.cal_frames.get("low", []),
+            self.cal_frames.get("high", []),
+            self.cal_frames.get("scale", []),
+            measured_at=datetime.now().isoformat(timespec="seconds"),
+        )
+        self.cal_result = result
+        self.cal_step = None
+
+        if not result.confident:
+            # A wrong calibration is worse than none, so keep what we had.
+            self._set_hint(Text(result.message, style="yellow"))
+            return
+
+        self.sensitivity = result.pitch_dial
+        self.pause_sensitivity = result.pause_dial
+        self.profile.calibration = result.calibration
+        for selector, kind, value in (
+            ("#sensitivity", SensitivityDial, self.sensitivity),
+            ("#pause", PauseDial, self.pause_sensitivity),
+        ):
+            dial = self._find(selector, kind)
+            if dial is not None:
+                dial.show(value)
+        self._remember_dials()
+        if self.frames:
+            self._resegment()
+        self._set_hint(result.message)
+
+    def action_play_reference(self) -> None:
+        """Play the tune the user is being asked to sing back."""
+        from .calibration import reference_notes
+
+        if self._active_tab() != "tab-calibrate":
+            return
+        if self.recorder.running:
+            # Playing now would be recorded through the microphone.
+            self._set_hint(
+                Text("Finish this step first, then press l.", style="yellow")
+            )
+            return
+        try:
+            self.player.play(reference_notes())
+        except Exception as exc:
+            self._set_hint(Text(f"Could not play audio: {exc}", style="bold red"))
+            return
+        self._set_hint("Playing the melody — sing it back when it finishes.")
+
     # -- profiles ----------------------------------------------------------
 
     def action_switch_profile(self) -> None:
@@ -1092,6 +1281,7 @@ class Humm2MelodyApp(App):
                 dial.show(value)
         if self.frames:
             self._resegment()
+        self._refresh_calibration()
 
     def _remember_dials(self) -> None:
         """Persist dial positions to the profile. Guests are not remembered."""
@@ -1174,6 +1364,10 @@ class Humm2MelodyApp(App):
 
     def action_clear(self) -> None:
         """Clear the display. Saved runs on disk are left alone."""
+        if self._active_tab() == "tab-calibrate":
+            if not self.recorder.running:
+                self._reset_calibration()
+            return
         if self.recorder.running:
             return
         self._stop_playback()
