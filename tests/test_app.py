@@ -2416,3 +2416,56 @@ async def test_the_voice_is_remembered_per_profile(tmp_path: Path):
         await pilot.press("v")
         await pilot.pause()
     assert store.list()[0].voice == "chord"
+
+
+# -- fitting the terminal --------------------------------------------------
+
+
+def long_take(count: int = 30) -> list[PitchFrame]:
+    """A transcription with far more notes than fit on screen."""
+    frames: list[PitchFrame] = []
+    step = 512 / SR
+    t = 0.0
+    for i in range(count):
+        for _ in range(int(0.25 / step)):
+            frames.append(PitchFrame(t, midi_to_hz(55 + i % 14), 0.95, 0.2))
+            t += step
+        for _ in range(int(0.15 / step)):
+            frames.append(PitchFrame(t, 0.0, 0.0, 0.0))
+            t += step
+    return frames
+
+
+async def test_a_long_transcription_does_not_grow_the_app(tmp_path: Path):
+    """The window should match the terminal however many notes there are."""
+    app = make_app(tmp_path, frames=long_take())
+    async with app.run_test(size=(156, 50)) as pilot:
+        await record_once(pilot)
+        assert len(app.notes) > 20
+        screen = app.screen
+        assert screen.virtual_size.height <= screen.region.height
+
+
+async def test_a_long_table_scrolls_inside_itself(tmp_path: Path):
+    app = make_app(tmp_path, frames=long_take())
+    async with app.run_test(size=(156, 50)) as pilot:
+        await record_once(pilot)
+        pane = app.query_one("#detail-pane")
+        assert pane.virtual_size.height > pane.region.height
+        assert pane.show_vertical_scrollbar
+
+
+async def test_a_short_transcription_still_fits(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test(size=(156, 50)) as pilot:
+        await record_once(pilot)
+        screen = app.screen
+        assert screen.virtual_size.height <= screen.region.height
+
+
+async def test_the_app_fits_a_short_terminal(tmp_path: Path):
+    app = make_app(tmp_path, frames=long_take())
+    async with app.run_test(size=(120, 30)) as pilot:
+        await record_once(pilot)
+        screen = app.screen
+        assert screen.virtual_size.height <= screen.region.height

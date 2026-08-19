@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (454 tests, no microphone required). But treat it
+> It works, and it is tested (458 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
@@ -518,7 +518,10 @@ Detection gets things wrong. **Click any note** — in the timeline, in the
 | `esc` | done |
 
 The selected note is highlighted in the timeline, the sequence and the table at
-once, whichever of the three you picked it in. Edits are written straight back to the run, and its playback is
+once, whichever of the three you picked it in.
+
+The table scrolls inside itself, so a long transcription never pushes the app
+past the bottom of the terminal — the window always matches the screen. Edits are written straight back to the run, and its playback is
 re-rendered to match.
 
 Editing works even when **nothing** was detected — that is the transcription

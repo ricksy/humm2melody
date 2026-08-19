@@ -1264,6 +1264,7 @@ class Humm2MelodyApp(App):
     Screen {
         layout: vertical;
         border: round $primary 40%;
+        overflow: hidden;
     }
 
     #live {
@@ -1285,7 +1286,8 @@ class Humm2MelodyApp(App):
     LevelMeter { height: 1; margin-top: 1; }
     #hint { height: 1; margin-top: 1; color: $text-muted; }
 
-    #notes-row { height: auto; }
+    #notes-row { height: 1fr; min-height: 8; }
+    #detail-pane { width: auto; height: 1fr; scrollbar-size-vertical: 1; }
     #detail { width: auto; height: auto; }
     #controls { width: 1fr; height: auto; padding-left: 3; }
     #controls Button { width: 18; min-width: 18; margin-right: 2; }
@@ -1297,7 +1299,7 @@ class Humm2MelodyApp(App):
     #notation { height: 1; margin: 0 2 0 2; }
 
     #main { height: 1fr; margin: 1 2; }
-    #results { width: 1fr; }
+    #results { width: 1fr; height: 1fr; }
     #roll { height: auto; margin-bottom: 1; }
     #sequence { height: auto; margin-bottom: 1; }
 
@@ -1422,7 +1424,11 @@ class Humm2MelodyApp(App):
                         # Beside the table rather than above everything: the
                         # app should fit on a screen without scrolling.
                         with Horizontal(id="notes-row"):
-                            yield DetailTable(id="detail")
+                            # The table scrolls inside itself, so a long
+                            # transcription cannot push the app past the
+                            # bottom of the terminal.
+                            with VerticalScroll(id="detail-pane"):
+                                yield DetailTable(id="detail")
                             with Horizontal(id="controls"):
                                 yield ActionButton(
                                     "▶  Start humming", variant="success", id="toggle"
