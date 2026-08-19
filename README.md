@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (125 tests, no microphone required). But treat it
+> It works, and it is tested (160 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
@@ -125,12 +125,15 @@ The detector wants a clear, sustained pitch, so:
 - Hold each note for at least ~0.2 s. Anything under 90 ms is discarded as noise.
 - Leave a small gap between repeated notes, otherwise two `E4`s in a row merge
   into one long `E4` — the detector hears pitch, not attacks.
-- Avoid sliding between notes; a glide gets snapped to whichever semitones it
-  passes through.
+- Sliding between notes is fine — the glide gate discards the slide and keeps
+  the held pitch. But do *hold* each note; a phrase that never settles anywhere
+  has no notes in it to find.
 - Hum in a comfortable range. Detection covers 65–1200 Hz (C2–D6).
 
-The tuning column tells you how far off you were. Being consistently ~50¢ off is
-normal for humming and does not affect which keys you press.
+The tuning column tells you how far off you were. A consistent offset is normal
+and harmless — but if it sits near ±50¢ you are on a semitone boundary, where
+small wobbles flip notes between two neighbours and corrupt the intervals rather
+than just the key. `analyze` reports this as the tuning offset.
 
 ## How it works
 
