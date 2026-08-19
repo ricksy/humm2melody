@@ -10,6 +10,7 @@ point is to audition what you would actually play.
 
 from __future__ import annotations
 
+import math
 import threading
 
 import numpy as np
@@ -92,12 +93,32 @@ def resample(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
     return np.interp(target, source, audio).astype(np.float32)
 
 
+MIX_MIN = 1
+MIX_MAX = 9
+MIX_DEFAULT = 5
+
+
+def mix_gains(level: int) -> tuple[float, float]:
+    """(hum_gain, tone_gain) for a balance level from 1 to 9.
+
+    An equal-power crossfade, but deliberately not centred on equal *gain*: a
+    pure tone is perceptually far louder than a breathy hum at the same
+    amplitude, so the midpoint favours the voice. The ends are pulled in
+    slightly so both sources stay audible across the whole range.
+    """
+    level = max(MIX_MIN, min(MIX_MAX, int(level)))
+    position = 0.1 + 0.8 * (level - MIX_MIN) / (MIX_MAX - MIX_MIN)
+    angle = position * math.pi / 2
+    return 0.95 * math.cos(angle), 0.55 * math.sin(angle)
+
+
 def mix_hum_with_tones(
     hum: np.ndarray,
     hum_rate: int,
     notes: list[Note],
     rate: int,
     *,
+    balance: int | None = None,
     hum_gain: float = 0.85,
     tone_gain: float = 0.45,
 ) -> np.ndarray:
@@ -107,7 +128,11 @@ def mix_hum_with_tones(
     the hum, it heard you right; if they beat against it or wander off, it did
     not. The tones sit under the hum so the hum stays recognisable.
     """
+    if balance is not None:
+        hum_gain, tone_gain = mix_gains(balance)
+
     voice = resample(hum, hum_rate, rate) * hum_gain
+    # render() already applies its own amplitude, so scale relative to that.
     tones = render(notes, rate) * (tone_gain / 0.32 if notes else 1.0)
 
     length = max(voice.size, tones.size)

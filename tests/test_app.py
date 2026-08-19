@@ -715,3 +715,65 @@ async def test_deleting_a_starred_run_warns_that_it_is_starred(tmp_path: Path):
         dialog = " ".join(str(w.content) for w in app.screen.query(Label))
         assert "starred" in dialog.lower()
         await pilot.press("n")
+
+
+# -- overlay mix dial ------------------------------------------------------
+
+
+async def test_mix_dial_starts_balanced(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test():
+        assert app.mix == 5
+        assert "Mix" in str(app.query_one("#mix", Static).content)
+
+
+async def test_minus_and_equals_move_the_mix(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("equals_sign")
+        assert app.mix == 6
+        await pilot.press("minus")
+        await pilot.press("minus")
+        assert app.mix == 4
+
+
+async def test_mix_dial_clamps(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        for _ in range(12):
+            await pilot.press("minus")
+        assert app.mix == 1
+        for _ in range(20):
+            await pilot.press("equals_sign")
+        assert app.mix == 9
+
+
+async def test_mix_does_not_disturb_the_other_dials(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("minus")
+        assert app.sensitivity == 5
+        assert app.pause_sensitivity == 5
+        assert app.mix == 4
+
+
+async def test_overlay_uses_the_chosen_balance(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("m")
+        await pilot.press("m")  # -> both
+        await pilot.press("minus")
+        await pilot.press("p")
+        quiet = app.player.buffer.copy()
+
+        app.player.stop()
+        for _ in range(6):
+            await pilot.press("equals_sign")
+        await pilot.press("p")
+        loud = app.player.buffer
+
+        assert quiet is not None and loud is not None
+        assert not np.allclose(quiet[: min(quiet.size, loud.size)],
+                               loud[: min(quiet.size, loud.size)])

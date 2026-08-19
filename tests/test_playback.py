@@ -170,3 +170,68 @@ def test_playing_nothing_is_a_no_op():
     player = Player()
     player.play_audio(np.zeros(0, dtype=np.float32), SR)
     assert player.playing is False
+
+
+# -- overlay balance -------------------------------------------------------
+
+
+def test_mix_gains_span_from_hum_to_tones():
+    from humm2melody.playback import MIX_MAX, MIX_MIN, mix_gains
+
+    low_hum, low_tone = mix_gains(MIX_MIN)
+    high_hum, high_tone = mix_gains(MIX_MAX)
+    assert low_hum > low_tone
+    assert high_tone > high_hum
+
+
+def test_mix_gains_are_monotonic():
+    from humm2melody.playback import mix_gains
+
+    hums = [mix_gains(n)[0] for n in range(1, 10)]
+    tones = [mix_gains(n)[1] for n in range(1, 10)]
+    assert hums == sorted(hums, reverse=True)
+    assert tones == sorted(tones)
+
+
+def test_both_sources_stay_audible_at_every_setting():
+    """The ends are pulled in so neither source ever drops to nothing."""
+    from humm2melody.playback import mix_gains
+
+    for level in range(1, 10):
+        hum, tone = mix_gains(level)
+        assert hum > 0.05 and tone > 0.05
+
+
+def test_mix_default_favours_the_voice():
+    """A pure tone reads louder than a breathy hum at the same amplitude."""
+    from humm2melody.playback import MIX_DEFAULT, mix_gains
+
+    hum, tone = mix_gains(MIX_DEFAULT)
+    assert hum > tone
+
+
+def test_mix_gains_are_clamped():
+    from humm2melody.playback import mix_gains
+
+    assert mix_gains(-3) == mix_gains(1)
+    assert mix_gains(99) == mix_gains(9)
+
+
+def test_balance_changes_the_overlay():
+    from humm2melody.playback import mix_hum_with_tones
+
+    hum = (0.4 * np.sin(np.arange(SR) * 0.05)).astype(np.float32)
+    notes = [note(60, 0.0, 0.5)]
+    quiet = mix_hum_with_tones(hum, SR, notes, SR, balance=1)
+    loud = mix_hum_with_tones(hum, SR, notes, SR, balance=9)
+    assert not np.allclose(quiet, loud)
+
+
+def test_overlay_never_clips_at_any_balance():
+    from humm2melody.playback import mix_hum_with_tones
+
+    hum = np.ones(SR, dtype=np.float32) * 0.9
+    notes = [note(60 + i, i * 0.2, i * 0.2 + 0.3) for i in range(5)]
+    for level in range(1, 10):
+        mixed = mix_hum_with_tones(hum, SR, notes, SR, balance=level)
+        assert np.max(np.abs(mixed)) <= 1.0

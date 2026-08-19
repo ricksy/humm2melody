@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (216 tests, no microphone required). But treat it
+> It works, and it is tested (228 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
@@ -70,6 +70,7 @@ or the level meter stays flat, enable it under
 | `[` / `]` | Pitch sensitivity − / + — re-transcribes instantly |
 | `<` / `>` | Pause sensitivity − / + |
 | `m` | Cycle playback: tones / your hum / both |
+| `-` / `=` | Overlay mix: more hum / more tones |
 | `c` | Clear the display (saved runs are untouched) |
 | `q` | Quit |
 
@@ -313,6 +314,23 @@ all** between them.
 
 The overlay is the most direct check there is: if the tones sit inside the hum,
 it heard you right; if they beat against it or wander off, it did not.
+
+`-` and `=` set the balance:
+
+```
+Mix         - +  [····●····]  5/9   balanced
+```
+
+It is an equal-power crossfade, but deliberately not centred on equal *gain*: a
+pure tone is perceptually much louder than a breathy hum at the same amplitude,
+so the midpoint favours your voice. Both ends are pulled in slightly so neither
+source ever drops to nothing.
+
+## What is not built yet
+
+`docs/ROADMAP.md` lists the outstanding work — per-user vocal calibration,
+training mode, rhythm and quantisation, MIDI export, key detection — with what
+already exists for each. Several are smaller than they look.
 
 ### Why clustering, not just merging
 

@@ -16,7 +16,7 @@ from textual.widgets import Static
 
 from .audio import AudioError, Recorder
 from .pitch import NOTE_NAMES
-from .playback import Player, mix_hum_with_tones
+from .playback import MIX_DEFAULT, MIX_MAX, MIX_MIN, Player, mix_hum_with_tones
 from .pitch import PitchFrame
 from .segment import (
     PAUSE_DEFAULT,
@@ -112,6 +112,22 @@ class PauseDial(Dial):
                 "only real silence separates notes",
                 "balanced",
                 "a fresh attack alone starts a new note",
+            ),
+        )
+
+
+class MixDial(Dial):
+    """Balance between your recording and the tones, for the overlay."""
+
+    def show(self, level: int) -> None:
+        self.render_dial(
+            "Mix",
+            "- +",
+            level,
+            (
+                "mostly your hum, tones underneath",
+                "balanced — favours your voice",
+                "mostly tones, hum underneath",
             ),
         )
 
@@ -460,6 +476,7 @@ class Humm2MelodyApp(App):
     #play { min-width: 22; }
     #sensitivity { height: 1; margin: 1 2 0 2; }
     #pause { height: 1; margin: 0 2 0 2; }
+    #mix { height: 1; margin: 0 2 0 2; }
     #compare { min-width: 26; margin-left: 2; }
 
     #main { height: 1fr; margin: 1 2; }
@@ -491,6 +508,8 @@ class Humm2MelodyApp(App):
         ("comma", "fewer_pauses", "Pauses −"),
         ("full_stop", "more_pauses", "Pauses +"),
         ("m", "cycle_source", "Compare"),
+        ("minus", "less_tones", "More hum"),
+        ("equals_sign", "more_tones", "More tones"),
         ("c", "clear", "Clear"),
         ("q", "quit", "Quit"),
     ]
@@ -517,6 +536,7 @@ class Humm2MelodyApp(App):
         self.sensitivity = SENSITIVITY_DEFAULT
         self.pause_sensitivity = PAUSE_DEFAULT
         self.source = "tones"
+        self.mix = MIX_DEFAULT
         self.audio = None
         self.audio_rate = 0
         self.sessions: list[Session] = []
@@ -537,6 +557,7 @@ class Humm2MelodyApp(App):
             yield ActionButton("◑  Tones only", id="compare")
         yield SensitivityDial(id="sensitivity")
         yield PauseDial(id="pause")
+        yield MixDial(id="mix")
         with Horizontal(id="main"):
             with VerticalScroll(id="results"):
                 yield PianoRoll(id="roll")
@@ -554,6 +575,7 @@ class Humm2MelodyApp(App):
         self.query_one("#meter", LevelMeter).show(0.0)
         self.query_one("#sensitivity", SensitivityDial).show(self.sensitivity)
         self.query_one("#pause", PauseDial).show(self.pause_sensitivity)
+        self.query_one("#mix", MixDial).show(self.mix)
         self.query_one("#compare", Button).label = self._source_label()
         # One key per line: the sidebar is too narrow for a single run-on line,
         # which wraps mid-word.
@@ -697,7 +719,11 @@ class Humm2MelodyApp(App):
                 rate = self.player.sample_rate or self.audio_rate
                 self.player.play_audio(
                     mix_hum_with_tones(
-                        self.audio, self.audio_rate, self.notes, rate
+                        self.audio,
+                        self.audio_rate,
+                        self.notes,
+                        rate,
+                        balance=self.mix,
                     ),
                     rate,
                 )
@@ -943,6 +969,24 @@ class Humm2MelodyApp(App):
             "hum": "◑  Your hum",
             "both": "◑  Hum + tones",
         }[self.source]
+
+    def action_less_tones(self) -> None:
+        self._set_mix(self.mix - 1)
+
+    def action_more_tones(self) -> None:
+        self._set_mix(self.mix + 1)
+
+    def _set_mix(self, level: int) -> None:
+        """Change the overlay balance. Takes effect on the next play."""
+        level = max(MIX_MIN, min(MIX_MAX, level))
+        if level == self.mix:
+            return
+        self.mix = level
+        dial = self._find("#mix", MixDial)
+        if dial is not None:
+            dial.show(level)
+        if self.source == "both":
+            self._set_hint(f"Mix {level}/{MIX_MAX} — press p to hear it.")
 
     def action_cycle_source(self) -> None:
         """Cycle what `p` plays: the transcription, your recording, or both."""
