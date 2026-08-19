@@ -167,6 +167,28 @@ def center_rms(frame: np.ndarray, span: int) -> float:
     return rms(frame[start : start + span])
 
 
+def analyse_signal(
+    audio: np.ndarray,
+    sample_rate: int,
+    *,
+    frame_size: int = 2048,
+    hop_size: int = 512,
+) -> list[PitchFrame]:
+    """Run the sliding-window analysis over a whole recording.
+
+    The same windowing the live recorder uses, so offline analysis of a saved
+    `hum.wav` sees exactly what the microphone path saw.
+    """
+    frames: list[PitchFrame] = []
+    for end in range(frame_size, len(audio) + 1, hop_size):
+        window = audio[end - frame_size : end]
+        time = (end - frame_size / 2) / sample_rate
+        frames.append(
+            analyse_frame(window, sample_rate, time, energy_span=hop_size)
+        )
+    return frames
+
+
 def analyse_frame(
     frame: np.ndarray,
     sample_rate: int,

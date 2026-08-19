@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from humm2melody.audio import FRAME_SIZE, HOP_SIZE
-from humm2melody.pitch import PitchFrame, analyse_frame, midi_to_hz
+from humm2melody.pitch import PitchFrame, analyse_signal, midi_to_hz
 from humm2melody.segment import segment_notes
 
 SR = 22050
@@ -27,15 +27,21 @@ def track(spec: list[tuple[float | None, float]]) -> list[PitchFrame]:
     return frames
 
 
-def synth(spec: list[tuple[int | None, float]], sr: int = SR) -> np.ndarray:
-    """Render (midi_or_None, seconds) pairs into a voice-like waveform."""
+def synth(
+    spec: list[tuple[int | None, float]], sr: int = SR, detune: float = 0.0
+) -> np.ndarray:
+    """Render (midi_or_None, seconds) pairs into a voice-like waveform.
+
+    `detune` shifts every note by that many semitones, for simulating a
+    performance that sits off the equal-tempered grid.
+    """
     parts = []
     for midi, seconds in spec:
         t = np.arange(int(seconds * sr)) / sr
         if midi is None:
             parts.append(np.zeros_like(t))
             continue
-        freq = midi_to_hz(midi)
+        freq = midi_to_hz(midi + detune)
         wave = sum(np.sin(2 * np.pi * freq * h * t) / h for h in (1, 2, 3, 4))
         wave = wave / np.max(np.abs(wave)) * 0.5
         # Short fades so note edges don't click.
@@ -48,13 +54,8 @@ def synth(spec: list[tuple[int | None, float]], sr: int = SR) -> np.ndarray:
 
 
 def analyse(audio: np.ndarray, sr: int = SR) -> list[PitchFrame]:
-    """Mirror Recorder's sliding-window loop, without the microphone."""
-    frames = []
-    for end in range(FRAME_SIZE, len(audio) + 1, HOP_SIZE):
-        window = audio[end - FRAME_SIZE : end]
-        time = (end - FRAME_SIZE / 2) / sr
-        frames.append(analyse_frame(window, sr, time, energy_span=HOP_SIZE))
-    return frames
+    """The same sliding-window loop the recorder uses, without the microphone."""
+    return analyse_signal(audio, sr, frame_size=FRAME_SIZE, hop_size=HOP_SIZE)
 
 
 def test_empty_input():

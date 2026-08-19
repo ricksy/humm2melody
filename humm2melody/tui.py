@@ -96,15 +96,36 @@ class PianoRoll(Static):
         super().__init__(**kwargs)
         self._notes: list[Note] = []
         self._playhead: float | None = None
+        self._head_col: int | None = None
 
     def show(self, notes: list[Note]) -> None:
         self._notes = notes
         self._playhead = None
+        self._head_col = None
         self.refresh_roll()
 
     def set_playhead(self, position: float | None) -> None:
+        """Move the playhead, redrawing only when it changes column.
+
+        The playhead ticks far faster than it crosses character cells, and a
+        redraw rebuilds every row. Skipping the no-op redraws keeps the UI from
+        competing with the audio callback for the interpreter.
+        """
         self._playhead = position
+        col = self._playhead_column()
+        if col == self._head_col:
+            return
+        self._head_col = col
         self.refresh_roll()
+
+    def _playhead_column(self) -> int | None:
+        if self._playhead is None or not self._notes:
+            return None
+        span = max(n.end for n in self._notes)
+        if span <= 0:
+            return None
+        width = max(20, self.size.width - 6)
+        return min(width - 1, int(self._playhead / span * width))
 
     def on_resize(self) -> None:
         self.refresh_roll()

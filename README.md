@@ -217,6 +217,53 @@ running the suite never writes into `recordings/`.
 The strongest test is a round trip — render notes to audio with the playback
 code, feed that back through the detector, and check the same notes come out.
 
+## Diagnosing a bad transcription
+
+When a run comes out wrong, `analyze` re-runs detection over its saved
+`hum.wav` and reports what the detector actually saw — before smoothing and
+segmentation discarded the evidence.
+
+```bash
+uv run humm2melody analyze recordings/2026-08-19_14-32-05
+uv run humm2melody analyze <run> --expect "C4 D4 E4"
+```
+
+```
+── pitch ──────────────────────────────────────────────
+  range             193.4 - 220.0 Hz (G3 - A3)
+  median            195.9 Hz (G3)
+  tuning offset     -5 cents
+  gliding frames    24%
+  octave jumps      0
+  within-note wobble 18 cents sd
+```
+
+What the numbers mean:
+
+| Reading | What it tells you |
+| --- | --- |
+| **tuning offset** | How far the whole performance sits off the A440 grid. Near ±50 means every note is a coin-flip between two semitones and vibrato decides — that corrupts intervals, not just the key. |
+| **gliding frames** | Fraction of the time you were sliding rather than holding. High means the segmenter is snapping every semitone the slide passes through into its own note. |
+| **octave jumps** | YIN flipping between f0 and 2·f0. |
+| **within-note wobble** | Vibrato depth. Large values push notes over semitone boundaries. |
+| **rms percentiles** | Whether you were loud enough to clear the silence gate. |
+
+`--expect` scores the result, and distinguishes a *wrong* transcription from a
+*transposed* one — humming in a comfortable key is a correct transcription of
+what you actually sang, not an error:
+
+```
+  verdict:  intervals match, transposed by -5 semitones
+```
+
+`--sweep` searches detection parameters for the setting that best matches what
+you meant, which is how you find out whether a failure is a tuning problem or a
+fundamental one:
+
+```bash
+uv run humm2melody analyze <run> --sweep --expect "C4 D4 E4"
+```
+
 ## Demo mode and the screen captures
 
 `--demo` replays a synthetic hum through the real analysis pipeline instead of

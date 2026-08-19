@@ -82,11 +82,30 @@ def _envelope(length: int, sample_rate: int) -> np.ndarray:
     return env
 
 
+def device_sample_rate(fallback: int = SAMPLE_RATE) -> int:
+    """The default output device's native rate.
+
+    Rendering at the device's own rate avoids handing the OS a stream it has to
+    resample on the fly, which is a common source of audible artefacts — a Mac
+    running its speakers at 48 kHz has to resample every 44.1 kHz buffer.
+    """
+    try:
+        import sounddevice as sd
+
+        info = sd.query_devices(sd.default.device[1])
+        rate = int(round(float(info["default_samplerate"])))
+    except Exception:
+        return fallback
+    return rate if 8000 <= rate <= 192000 else fallback
+
+
 class Player:
     """Non-blocking playback with a position readout for the playhead."""
 
-    def __init__(self, sample_rate: int = SAMPLE_RATE) -> None:
-        self.sample_rate = sample_rate
+    def __init__(self, sample_rate: int | None = None) -> None:
+        # None means "match the output device", resolved when play() is called.
+        self._requested_rate = sample_rate
+        self.sample_rate = sample_rate or SAMPLE_RATE
         self._stream = None
         self._buffer = np.zeros(0, dtype=np.float32)
         self._cursor = 0
@@ -99,14 +118,14 @@ class Player:
     @property
     def position(self) -> float:
         """Seconds into the melody, for drawing the playhead."""
-        with self._lock:
-            return self._cursor / self.sample_rate
+        return self._cursor / self.sample_rate
 
     def play(self, notes: list[Note]) -> None:
         """Start playing. Restarts cleanly if already playing."""
         import sounddevice as sd
 
         self.stop()
+        self.sample_rate = self._requested_rate or device_sample_rate()
         buffer = render(notes, self.sample_rate)
         if buffer.size == 0:
             return
@@ -115,10 +134,13 @@ class Player:
         self._cursor = 0
 
         def callback(outdata, frames, _time_info, _status) -> None:
-            with self._lock:
-                start = self._cursor
-                chunk = self._buffer[start : start + frames]
-                self._cursor = start + chunk.size
+            # No lock here: a Python lock in the audio callback risks stalling
+            # it behind the UI thread. A plain int read/write is atomic enough,
+            # and the only reader is the playhead, where a stale frame is
+            # invisible.
+            start = self._cursor
+            chunk = self._buffer[start : start + frames]
+            self._cursor = start + chunk.size
 
             outdata[: chunk.size, 0] = chunk
             if chunk.size < frames:
@@ -129,6 +151,7 @@ class Player:
             samplerate=self.sample_rate,
             channels=1,
             dtype="float32",
+            latency="high",  # prefer a safe buffer over low latency
             callback=callback,
             finished_callback=self._on_finished,
         )
