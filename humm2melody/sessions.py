@@ -70,6 +70,29 @@ def read_wav(path: Path) -> tuple[np.ndarray, int]:
     return np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32767.0, sample_rate
 
 
+def read_pitch_track(path: Path) -> list[PitchFrame]:
+    """Load a run's frame-by-frame pitch track back from its CSV.
+
+    Re-segmenting a saved run needs the frames, not the notes: the notes are
+    already the *result* of one particular set of thresholds.
+    """
+    frames: list[PitchFrame] = []
+    try:
+        with open(path) as handle:
+            for row in csv.DictReader(handle):
+                frames.append(
+                    PitchFrame(
+                        time=float(row["time"]),
+                        freq=float(row["freq"]),
+                        confidence=float(row["confidence"]),
+                        rms=float(row["rms"]),
+                    )
+                )
+    except (OSError, KeyError, ValueError):
+        return []
+    return frames
+
+
 @dataclass
 class Session:
     """One saved run."""

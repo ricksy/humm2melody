@@ -238,7 +238,7 @@ SWEEP_GRID = {
     "min_duration": (0.06, 0.09, 0.14),
     "smoothing": (3, 5, 9),
     "gap_tolerance": (0.05, 0.07, 0.12),
-    "max_glide_rate": (None, 2.0, 3.0, 5.0),
+    "max_glide_rate": (None, 3.0, 5.0, 8.0),
 }
 
 
@@ -314,8 +314,8 @@ def format_report(report: Diagnosis, expected: list[str] | None = None) -> str:
             add("    notes between two semitones. Worth correcting globally.")
         add(f"  gliding frames    {report.glide_fraction * 100:.0f}%")
         if report.glide_fraction > 0.35:
-            add("  ! mostly sliding rather than holding: the segmenter snaps")
-            add("    every semitone a glide passes through into its own note.")
+            add("  ! mostly sliding rather than holding. Slides are discarded,")
+            add("    so a phrase that never settles has little left to report.")
         add(f"  octave jumps      {report.octave_jumps}")
         if report.octave_jumps > 2:
             add("  ! octave instability: YIN is switching between f0 and 2*f0.")

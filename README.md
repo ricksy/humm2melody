@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (160 tests, no microphone required). But treat it
+> It works, and it is tested (175 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
@@ -66,6 +66,7 @@ or the level meter stays flat, enable it under
 | `enter` | Load the run highlighted in the sidebar |
 | `r` | Rename that run |
 | `d` | Delete that run (asks first) |
+| `[` / `]` | Less / more sensitive — re-transcribes instantly |
 | `c` | Clear the display (saved runs are untouched) |
 | `q` | Quit |
 
@@ -235,6 +236,39 @@ running the suite never writes into `recordings/`.
 
 The strongest test is a round trip — render notes to audio with the playback
 code, feed that back through the detector, and check the same notes come out.
+
+## The sensitivity dial
+
+Voices are not keyboards. An untrained voice slides between notes, overshoots
+and settles, and returns to "the same" pitch a little flat or sharp each time —
+so how big a pitch difference *should* count as a different note depends on who
+is humming.
+
+`[` and `]` move a single dial from 1 (forgiving) to 9 (literal), and
+**re-transcribe the recording you already made**. No second take: the frame-by-
+frame pitch track is kept, so only the segmentation is redone. It works on saved
+runs too — load one from the sidebar and turn the dial.
+
+```
+Sensitivity  [····●····]  5/9   balanced
+```
+
+Low settings smooth harder, require longer notes, and cluster nearby pitches so
+small wobbles read as one note. High settings resolve smaller intervals at the
+cost of picking up wobble.
+
+One dial rather than five sliders, because the parameters are not independent: a
+voice that wanders needs *both* heavier smoothing and a willingness to treat
+nearby pitches as the same note, and most combinations of five sliders are
+nonsense.
+
+### Why clustering, not just merging
+
+Pitches are clustered across the *whole* recording, not merely between
+neighbours. If you hum low-high-low and your two lows land 45 cents apart either
+side of a rounding boundary, they come out as two *different* notes — and
+merging adjacent notes cannot fix it, because the two lows are not adjacent. The
+high one is between them.
 
 ## Diagnosing a bad transcription
 

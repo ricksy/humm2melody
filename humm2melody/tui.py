@@ -17,8 +17,15 @@ from textual.widgets import Static
 from .audio import AudioError, Recorder
 from .pitch import NOTE_NAMES
 from .playback import Player
-from .segment import Note, segment_notes
-from .sessions import DEFAULT_OUTPUT_DIR, Session, SessionStore
+from .pitch import PitchFrame
+from .segment import (
+    SENSITIVITY_DEFAULT,
+    SENSITIVITY_MAX,
+    SENSITIVITY_MIN,
+    Note,
+    segment_with_sensitivity,
+)
+from .sessions import DEFAULT_OUTPUT_DIR, Session, SessionStore, read_pitch_track
 
 MAX_ROLL_ROWS = 32
 """Cap the piano roll's pitch range so one stray octave can't blow up the view."""
@@ -45,6 +52,29 @@ class ActionButton(Button):
     """
 
     can_focus = False
+
+
+class SensitivityDial(Static):
+    """How finely to distinguish pitches, as a labelled dial."""
+
+    def show(self, level: int) -> None:
+        text = Text("Sensitivity  ", style="bold")
+        text.append("[", style="dim")
+        for step in range(SENSITIVITY_MIN, SENSITIVITY_MAX + 1):
+            if step == level:
+                text.append("●", style=f"bold {HIGHLIGHT}")
+            else:
+                text.append("·", style="grey30")
+        text.append("]", style="dim")
+        text.append(f"  {level}/{SENSITIVITY_MAX}   ", style="bold")
+        if level < SENSITIVITY_DEFAULT:
+            note = "forgiving — small wobbles read as the same note"
+        elif level == SENSITIVITY_DEFAULT:
+            note = "balanced"
+        else:
+            note = "literal — small differences become separate notes"
+        text.append(note, style="dim")
+        self.update(text)
 
 
 class LevelMeter(Static):
@@ -389,6 +419,7 @@ class Humm2MelodyApp(App):
     }
     #toggle { min-width: 24; margin-right: 2; }
     #play { min-width: 22; }
+    #sensitivity { height: 1; margin: 1 2 0 2; }
 
     #main { height: 1fr; margin: 1 2; }
     #results { width: 1fr; }
@@ -413,6 +444,8 @@ class Humm2MelodyApp(App):
         ("p", "play", "Play back"),
         ("r", "rename_run", "Rename run"),
         ("d", "delete_run", "Delete run"),
+        ("left_square_bracket", "less_sensitive", "Less sensitive"),
+        ("right_square_bracket", "more_sensitive", "More sensitive"),
         ("c", "clear", "Clear"),
         ("q", "quit", "Quit"),
     ]
@@ -435,6 +468,8 @@ class Humm2MelodyApp(App):
         self.store = SessionStore(output_dir)
         self.saving = save
         self.notes: list[Note] = []
+        self.frames: list[PitchFrame] = []
+        self.sensitivity = SENSITIVITY_DEFAULT
         self.sessions: list[Session] = []
         self._record_timer = None
         self._play_timer = None
@@ -450,6 +485,7 @@ class Humm2MelodyApp(App):
             yield ActionButton(
                 "♪  Play back", variant="primary", id="play", disabled=True
             )
+        yield SensitivityDial(id="sensitivity")
         with Horizontal(id="main"):
             with VerticalScroll(id="results"):
                 yield PianoRoll(id="roll")
@@ -465,6 +501,7 @@ class Humm2MelodyApp(App):
     def on_mount(self) -> None:
         self.query_one("#readout", NoteReadout).idle("Ready.")
         self.query_one("#meter", LevelMeter).show(0.0)
+        self.query_one("#sensitivity", SensitivityDial).show(self.sensitivity)
         # One key per line: the sidebar is too narrow for a single run-on line,
         # which wraps mid-word.
         self.query_one("#run-hint", Static).update(
@@ -531,7 +568,8 @@ class Humm2MelodyApp(App):
 
         frames = self.recorder.stop()
         audio = self.recorder.audio()
-        self.notes = segment_notes(frames)
+        self.frames = frames
+        self.notes = segment_with_sensitivity(frames, self.sensitivity)
 
         button = self.query_one("#toggle", Button)
         button.label = "▶  Start humming"
@@ -677,7 +715,11 @@ class Humm2MelodyApp(App):
         if session is None:
             return
         self._stop_playback()
-        self.notes = list(session.notes)
+        self.frames = read_pitch_track(session.pitch_track_path)
+        if self.frames:
+            self.notes = segment_with_sensitivity(self.frames, self.sensitivity)
+        else:
+            self.notes = list(session.notes)
         self._show_notes(self.notes)
         self.query_one("#readout", NoteReadout).idle(
             f"Loaded “{session.display_name}” — {session.summary}."
@@ -748,8 +790,32 @@ class Humm2MelodyApp(App):
             _detail_table(notes) if notes else Text("")
         )
 
+    def action_less_sensitive(self) -> None:
+        self._set_sensitivity(self.sensitivity - 1)
+
+    def action_more_sensitive(self) -> None:
+        self._set_sensitivity(self.sensitivity + 1)
+
+    def _set_sensitivity(self, level: int) -> None:
+        """Change the dial and re-segment, without needing a new recording."""
+        level = max(SENSITIVITY_MIN, min(SENSITIVITY_MAX, level))
+        if level == self.sensitivity:
+            return
+        self.sensitivity = level
+        dial = self._find("#sensitivity", SensitivityDial)
+        if dial is not None:
+            dial.show(level)
+
+        if self.recorder.running or not self.frames:
+            return
+        self._stop_playback()
+        self.notes = segment_with_sensitivity(self.frames, level)
+        self._show_notes(self.notes)
+        self._set_hint(f"Sensitivity {level}/{SENSITIVITY_MAX} · {len(self.notes)} notes")
+
     def _clear_results(self) -> None:
         self.notes = []
+        self.frames = []
         self._show_notes([])
 
     def _set_hint(self, message) -> None:

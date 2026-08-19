@@ -25,6 +25,7 @@ class Note:
     end: float  # seconds
     freq: float  # mean measured frequency across the note
     confidence: float  # mean YIN confidence
+    pitch: float = 0.0  # continuous MIDI value before snapping, 0 if unknown
 
     @property
     def duration(self) -> float:
@@ -46,10 +47,19 @@ class Note:
         return midi_to_hz(self.midi)
 
 
+def _odd(value: float) -> int:
+    """Nearest odd integer >= 3, so a median window stays centred."""
+    size = max(3, int(round(value)))
+    return size if size % 2 else size + 1
+
+
 def _median_filter(values: np.ndarray, size: int) -> np.ndarray:
     """NaN-aware running median. NaN marks an unvoiced frame."""
     if size <= 1 or values.size == 0:
         return values
+    # An even window cannot be centred: the symmetric padding below would
+    # return one sample more than it was given.
+    size = _odd(size)
     half = size // 2
     padded = np.pad(values, half, mode="edge")
     windows = np.lib.stride_tricks.sliding_window_view(padded, size)
@@ -110,10 +120,26 @@ def glide_mask(
     return mask
 
 
-def _odd(value: float) -> int:
-    """Nearest odd integer >= 3, so a median window stays centred."""
-    size = max(3, int(round(value)))
-    return size if size % 2 else size + 1
+def tuning_offset_semitones(midis: np.ndarray) -> float:
+    """How far a performance sits off the equal-tempered grid, in semitones.
+
+    Nobody hums in A440. A voice sitting a consistent 40 cents sharp is still
+    musical, but rounding is done at the half-semitone line, so a performance
+    parked near that line has every note decided by whichever way a small
+    wobble happened to lean -- two renditions of the *same* pitch can land a
+    semitone apart. Estimating the offset and shifting the grid to match is
+    what a chromatic tuner does when it calibrates.
+
+    Averaged as angles on a circle, because deviation wraps: +49 and -49 cents
+    are 2 cents apart, not 98.
+    """
+    values = midis[~np.isnan(midis)]
+    if values.size == 0:
+        return 0.0
+    angles = 2 * np.pi * (values % 1.0)
+    mean = np.arctan2(np.sin(angles).mean(), np.cos(angles).mean())
+    offset = mean / (2 * np.pi)
+    return float((offset + 0.5) % 1.0 - 0.5)
 
 
 def segment_notes(
@@ -124,7 +150,11 @@ def segment_notes(
     min_duration: float = 0.09,
     gap_tolerance: float = 0.07,
     smoothing: int = 5,
-    max_glide_rate: float | None = 3.0,
+    max_glide_rate: float | None = 5.0,
+    tuning: str | float | None = "auto",
+    max_step: float = 0.8,
+    merge_within: float = 0.0,
+    cluster_tolerance: float = 0.0,
 ) -> list[Note]:
     """Group a pitch track into notes.
 
@@ -135,8 +165,18 @@ def segment_notes(
     split in two.
 
     ``max_glide_rate`` (semitones/second, None to disable) discards frames
-    where the pitch is sliding rather than held, which is what stops a legato
-    hum from transcribing as a chromatic run.
+    where the pitch is sliding rather than held, which stops a legato hum from
+    transcribing as a chromatic run.
+
+    ``tuning`` shifts the semitone grid: ``"auto"`` estimates the offset from
+    the recording, a number sets it in cents, ``None`` pins it to A440.
+
+    A note is decided from the *median* of a whole held region rather than by
+    rounding each frame and grouping equal values. Voices drift: holding one
+    note while sliding a semitone across a rounding boundary used to split it
+    into two different notes, which is a property of the arithmetic and not of
+    the singing. ``max_step`` still splits a region where the pitch genuinely
+    jumps between adjacent frames.
     """
     if not frames:
         return []
@@ -157,77 +197,148 @@ def segment_notes(
         # Drop the slides, keep the held pitch on either side of them.
         smoothed[glide_mask(smoothed, times, max_glide_rate)] = np.nan
 
-    snapped = np.where(np.isnan(smoothed), np.nan, np.round(smoothed))
+    if tuning == "auto":
+        offset = tuning_offset_semitones(smoothed)
+    elif tuning is None:
+        offset = 0.0
+    else:
+        offset = float(tuning) / 100.0
 
     frame_step = float(np.median(np.diff(times))) if len(times) > 1 else 0.01
+    gap_frames = max(1, int(round(gap_tolerance / frame_step)))
 
     notes: list[Note] = []
-    run_start: int | None = None
-    run_midi = 0
 
-    def close_run(start_idx: int, end_idx: int, midi: int) -> None:
-        """Emit a note for frames [start_idx, end_idx)."""
+    def emit(start_idx: int, end_idx: int) -> None:
+        """Emit one note for the held region [start_idx, end_idx)."""
+        values = smoothed[start_idx:end_idx]
+        values = values[~np.isnan(values)]
+        if values.size == 0:
+            return
+        start = float(times[start_idx])
+        end = float(times[end_idx - 1] + frame_step)
+        if end - start < min_duration:
+            return
+
+        pitch = float(np.median(values)) - offset
         members = [
             frames[i]
             for i in range(start_idx, end_idx)
-            if not np.isnan(snapped[i]) and int(snapped[i]) == midi
+            if not np.isnan(smoothed[i]) and frames[i].freq > 0
         ]
         if not members:
             return
-        start = times[start_idx]
-        end = times[end_idx - 1] + frame_step
-        if end - start < min_duration:
-            return
         notes.append(
             Note(
-                midi=midi,
-                start=float(start),
-                end=float(end),
+                midi=int(round(pitch)),
+                pitch=pitch,
+                start=start,
+                end=end,
                 freq=float(np.mean([m.freq for m in members])),
                 confidence=float(np.mean([m.confidence for m in members])),
             )
         )
 
-    gap_frames = max(1, int(round(gap_tolerance / frame_step)))
+    run_start: int | None = None
+    last_valid: int | None = None
     silence = 0
 
-    for i, value in enumerate(snapped):
+    for i, value in enumerate(smoothed):
         if np.isnan(value):
-            # Tolerate a short dropout; only end the run once it drags on.
             if run_start is not None:
                 silence += 1
                 if silence > gap_frames:
-                    close_run(run_start, i - silence + 1, run_midi)
+                    emit(run_start, last_valid + 1)
                     run_start = None
                     silence = 0
             continue
 
-        midi = int(value)
         if run_start is None:
-            run_start, run_midi, silence = i, midi, 0
-        elif midi != run_midi:
-            close_run(run_start, i - silence, run_midi)
-            run_start, run_midi, silence = i, midi, 0
-        else:
-            silence = 0
+            run_start, last_valid, silence = i, i, 0
+            continue
 
-    if run_start is not None:
-        close_run(run_start, len(snapped) - silence, run_midi)
+        # A genuine jump ends the region even when nothing was gliding, which
+        # keeps back-to-back notes apart if glide gating is switched off.
+        if abs(value - smoothed[last_valid]) > max_step:
+            emit(run_start, last_valid + 1)
+            run_start = i
+        last_valid, silence = i, 0
 
-    return _merge_adjacent(notes, gap_tolerance)
+    if run_start is not None and last_valid is not None:
+        emit(run_start, last_valid + 1)
+
+    notes = _cluster_pitches(notes, cluster_tolerance)
+    return _merge_adjacent(notes, gap_tolerance, merge_within)
 
 
-def _merge_adjacent(notes: list[Note], gap_tolerance: float) -> list[Note]:
-    """Join same-pitch notes separated only by a brief gap."""
+def _cluster_pitches(notes: list[Note], tolerance: float) -> list[Note]:
+    """Collapse pitches that are close together anywhere in the recording.
+
+    An unsteady voice returns to "the same" note a little flat or sharp each
+    time. If those renditions straddle a rounding boundary they come out as
+    different notes -- a low-high-low phrase reads as three *different*
+    pitches. Clustering the whole recording fixes that, where merging only
+    adjacent notes cannot: the two lows are not adjacent, the high is between
+    them.
+
+    Membership is tested against the running cluster median rather than the
+    previous member, so a slow drift cannot chain far-apart pitches together.
+    """
+    if tolerance <= 0 or len(notes) < 2:
+        return notes
+
+    order = sorted(range(len(notes)), key=lambda i: notes[i].pitch)
+    clusters: list[list[int]] = []
+    for index in order:
+        pitch = notes[index].pitch
+        if clusters:
+            current = [notes[i].pitch for i in clusters[-1]]
+            if abs(pitch - float(np.median(current))) <= tolerance:
+                clusters[-1].append(index)
+                continue
+        clusters.append([index])
+
+    resolved = list(notes)
+    for cluster in clusters:
+        centre = float(np.median([notes[i].pitch for i in cluster]))
+        midi = int(round(centre))
+        for i in cluster:
+            resolved[i] = Note(
+                midi=midi,
+                pitch=centre,
+                start=notes[i].start,
+                end=notes[i].end,
+                freq=notes[i].freq,
+                confidence=notes[i].confidence,
+            )
+    return resolved
+
+
+def _merge_adjacent(
+    notes: list[Note], gap_tolerance: float, merge_within: float = 0.0
+) -> list[Note]:
+    """Join notes separated only by a brief gap.
+
+    Same-pitch neighbours always merge. ``merge_within`` additionally merges
+    neighbours whose pitches are within that many semitones, which is how a low
+    sensitivity setting stops an unsteady voice from reading as a melody: the
+    combined pitch is re-snapped from the duration-weighted average.
+    """
     if not notes:
         return []
     merged = [notes[0]]
     for note in notes[1:]:
         prev = merged[-1]
-        if note.midi == prev.midi and note.start - prev.end <= gap_tolerance:
+        close = note.midi == prev.midi or (
+            merge_within > 0 and abs(note.midi - prev.midi) <= merge_within
+        )
+        if close and note.start - prev.end <= gap_tolerance:
             total = prev.duration + note.duration
+            blended = (
+                prev.freq * prev.duration + note.freq * note.duration
+            ) / total
             merged[-1] = Note(
-                midi=prev.midi,
+                midi=prev.midi if note.midi == prev.midi else round(hz_to_midi(blended)),
                 start=prev.start,
                 end=note.end,
                 freq=(prev.freq * prev.duration + note.freq * note.duration) / total,
@@ -239,3 +350,71 @@ def _merge_adjacent(notes: list[Note], gap_tolerance: float) -> list[Note]:
         else:
             merged.append(note)
     return merged
+
+
+SENSITIVITY_MIN = 1
+SENSITIVITY_MAX = 9
+SENSITIVITY_DEFAULT = 5
+
+_ANCHORS: dict[int, dict[str, float]] = {
+    # Forgiving: an unsteady voice reads as few, long, confident notes.
+    SENSITIVITY_MIN: {
+        "smoothing": 9,
+        "min_duration": 0.20,
+        "gap_tolerance": 0.12,
+        "max_glide_rate": 3.0,
+        "merge_within": 1.2,
+        "cluster_tolerance": 1.0,
+    },
+    # The tuned defaults.
+    SENSITIVITY_DEFAULT: {
+        "smoothing": 5,
+        "min_duration": 0.09,
+        "gap_tolerance": 0.07,
+        "max_glide_rate": 5.0,
+        "merge_within": 0.0,
+        "cluster_tolerance": 0.35,
+    },
+    # Literal: every deliberate move is a note, at the cost of picking up wobble.
+    SENSITIVITY_MAX: {
+        "smoothing": 3,
+        "min_duration": 0.05,
+        "gap_tolerance": 0.04,
+        "max_glide_rate": 9.0,
+        "merge_within": 0.0,
+        "cluster_tolerance": 0.0,
+    },
+}
+
+
+def sensitivity_settings(level: int) -> dict:
+    """Segmentation parameters for a sensitivity level from 1 to 9.
+
+    One control, because the parameters are not independent: a voice that
+    wanders needs *both* heavier smoothing and a willingness to treat nearby
+    pitches as the same note, and exposing five sliders would mostly offer
+    combinations that make no sense. Level 5 is the tuned default; lower is
+    more forgiving of an unsteady voice, higher resolves smaller intervals.
+    """
+    level = max(SENSITIVITY_MIN, min(SENSITIVITY_MAX, int(level)))
+    if level in _ANCHORS:
+        settings = dict(_ANCHORS[level])
+    else:
+        lo_key = SENSITIVITY_MIN if level < SENSITIVITY_DEFAULT else SENSITIVITY_DEFAULT
+        hi_key = SENSITIVITY_DEFAULT if level < SENSITIVITY_DEFAULT else SENSITIVITY_MAX
+        lo, hi = _ANCHORS[lo_key], _ANCHORS[hi_key]
+        weight = (level - lo_key) / (hi_key - lo_key)
+        settings = {
+            key: lo[key] + (hi[key] - lo[key]) * weight for key in lo
+        }
+    settings["smoothing"] = int(round(settings["smoothing"]))
+    return settings
+
+
+def segment_with_sensitivity(
+    frames: list[PitchFrame], level: int = SENSITIVITY_DEFAULT, **overrides
+) -> list[Note]:
+    """Segment a pitch track at the given sensitivity level."""
+    settings = sensitivity_settings(level)
+    settings.update(overrides)
+    return segment_notes(frames, **settings)

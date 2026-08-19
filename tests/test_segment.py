@@ -7,7 +7,7 @@ import pytest
 
 from humm2melody.audio import FRAME_SIZE, HOP_SIZE
 from humm2melody.pitch import PitchFrame, analyse_signal, midi_to_hz
-from humm2melody.segment import segment_notes
+from humm2melody.segment import segment_notes, segment_with_sensitivity
 
 SR = 22050
 STEP = HOP_SIZE / SR  # seconds between analysis frames
@@ -160,11 +160,13 @@ def test_end_to_end_repeated_note_with_gap():
 # -- glide gating ----------------------------------------------------------
 
 
-def legato(targets, hold=0.45, slide=0.18, vibrato=0.18, sr=SR):
+def legato(targets, hold=0.45, slide=0.12, vibrato=0.18, sr=SR):
     """A sung phrase: hold a pitch, slide to the next, hold again.
 
     This is what humming actually looks like, as opposed to the step-shaped
-    tracks the other tests use.
+    tracks the other tests use. The default slide of 120ms matches how quickly
+    a voice actually moves between notes; a much slower portamento is genuinely
+    ambiguous, since it is barely faster than a note settling into pitch.
     """
     midi = []
     for i, m in enumerate(targets):
@@ -179,10 +181,21 @@ def legato(targets, hold=0.45, slide=0.18, vibrato=0.18, sr=SR):
     return wave.astype(np.float32)
 
 
-def test_legato_hum_without_gating_invents_a_chromatic_run():
-    """The failure this exists to prevent: sliding C to E yields every semitone."""
-    notes = segment_notes(analyse(legato([60, 62, 64])), max_glide_rate=None)
-    assert [n.name for n in notes] == ["C4", "C#4", "D4", "D#4", "E4"]
+def test_legato_hum_never_invents_a_chromatic_run():
+    """The original failure: sliding C to E transcribed as every semitone between.
+
+    Two independent mechanisms now prevent it, so check both configurations.
+    Without glide gating the region is still one note, because its pitch comes
+    from the median of the whole held region rather than from rounding each
+    frame; with gating the slide is discarded and the held notes survive.
+    """
+    audio = analyse(legato([60, 62, 64]))
+
+    ungated = [n.name for n in segment_notes(audio, max_glide_rate=None)]
+    assert "C#4" not in ungated and "D#4" not in ungated
+
+    gated = [n.name for n in segment_notes(audio)]
+    assert gated == ["C4", "D4", "E4"]
 
 
 def test_legato_hum_is_transcribed_correctly_with_gating():
@@ -230,3 +243,79 @@ def test_a_pure_slide_with_no_held_pitch_yields_little():
     phase = 2 * np.pi * np.cumsum(midi_to_hz(60 + 7 * t / seconds)) / sr
     audio = (0.45 * np.sin(phase)).astype(np.float32)
     assert len(segment_notes(analyse(audio))) <= 2
+
+
+def test_a_very_slow_portamento_may_merge_into_one_note():
+    """A documented limitation, not an accident.
+
+    A one-semitone slide stretched over 180ms moves at about 5.6 semitones/sec,
+    which is close to the rate at which a voice settles onto a note it slightly
+    overshot. The detector cannot tell those apart from rate alone, so a slide
+    that lazy may be absorbed into its neighbour.
+    """
+    notes = segment_notes(analyse(legato([65, 64], hold=0.5, slide=0.30)))
+    assert len(notes) <= 2
+
+
+def test_even_smoothing_window_does_not_crash():
+    """An even median window cannot be centred; it must be coerced, not crash."""
+    frames = track([(440.0, 0.5)])
+    for size in (2, 4, 6, 8):
+        assert [n.name for n in segment_notes(frames, smoothing=size)] == ["A4"]
+
+
+# -- sensitivity -----------------------------------------------------------
+
+
+def test_sensitivity_anchors_are_defined():
+    from humm2melody.segment import sensitivity_settings
+
+    for level in range(1, 10):
+        settings = sensitivity_settings(level)
+        assert settings["smoothing"] >= 3
+        assert settings["min_duration"] > 0
+
+
+def test_sensitivity_is_monotonic():
+    """Lower levels must be uniformly more forgiving, not a jumble."""
+    from humm2melody.segment import sensitivity_settings
+
+    levels = [sensitivity_settings(x) for x in range(1, 10)]
+    assert [s["smoothing"] for s in levels] == sorted(
+        (s["smoothing"] for s in levels), reverse=True
+    )
+    assert [s["min_duration"] for s in levels] == sorted(
+        (s["min_duration"] for s in levels), reverse=True
+    )
+    assert [s["cluster_tolerance"] for s in levels] == sorted(
+        (s["cluster_tolerance"] for s in levels), reverse=True
+    )
+
+
+def test_sensitivity_is_clamped():
+    from humm2melody.segment import sensitivity_settings
+
+    assert sensitivity_settings(-5) == sensitivity_settings(1)
+    assert sensitivity_settings(99) == sensitivity_settings(9)
+
+
+def test_every_sensitivity_level_runs():
+    from humm2melody.segment import segment_with_sensitivity
+
+    frames = analyse(legato([60, 62, 64]))
+    for level in range(1, 10):
+        assert isinstance(segment_with_sensitivity(frames, level), list)
+
+
+def test_low_sensitivity_unifies_a_wandering_voice():
+    """Two attempts at one pitch, landing either side of the rounding line."""
+    frames = analyse(legato([60.45, 64.0, 59.6], hold=0.5))
+    low = segment_with_sensitivity(frames, 1)
+    assert len(low) == 3
+    assert low[0].name == low[2].name  # the two outer notes agree
+
+
+def test_clustering_leaves_genuine_intervals_alone():
+    frames = analyse(legato([60, 64, 67], hold=0.5))
+    notes = segment_with_sensitivity(frames, 1)
+    assert len({n.name for n in notes}) == 3

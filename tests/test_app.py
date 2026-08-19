@@ -465,3 +465,82 @@ async def test_rename_and_delete_do_nothing_without_a_selection(tmp_path: Path):
         # No modal should have opened, and nothing should have blown up.
         assert isinstance(app.screen, type(app.screen))
         assert app.sessions == []
+
+
+# -- sensitivity dial ------------------------------------------------------
+
+
+async def test_sensitivity_starts_balanced(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test():
+        assert app.sensitivity == 5
+        assert "Sensitivity" in str(app.query_one("#sensitivity", Static).content)
+
+
+async def test_brackets_move_the_dial(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("right_square_bracket")
+        assert app.sensitivity == 6
+        await pilot.press("left_square_bracket")
+        await pilot.press("left_square_bracket")
+        assert app.sensitivity == 4
+
+
+async def test_dial_clamps_at_both_ends(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        for _ in range(12):
+            await pilot.press("left_square_bracket")
+        assert app.sensitivity == 1
+        for _ in range(20):
+            await pilot.press("right_square_bracket")
+        assert app.sensitivity == 9
+
+
+async def test_changing_sensitivity_resegments_without_rerecording(tmp_path: Path):
+    """The whole point: adjust after the fact, no second take."""
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        assert app.frames  # the pitch track is kept for re-segmentation
+
+        before = list(app.notes)
+        await pilot.press("left_square_bracket")
+        await pilot.pause()
+        assert app.notes  # still a transcription, recomputed
+        assert app.recorder.running is False  # nothing was re-recorded
+        assert len(before) > 0
+
+
+async def test_sensitivity_does_nothing_without_a_recording(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("left_square_bracket")
+        await pilot.pause()
+        assert app.notes == []
+
+
+async def test_loading_a_run_restores_its_pitch_track(tmp_path: Path):
+    """A saved run must stay adjustable, not just replayable."""
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("c")
+        await pilot.pause()
+        assert app.frames == []
+
+        app.load_selected_session()
+        await pilot.pause()
+        assert len(app.frames) > 0
+        assert [n.name for n in app.notes] == ["C4", "E4", "G4"]
+
+
+async def test_clear_resets_the_pitch_track(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await record_once(pilot)
+        await pilot.press("c")
+        await pilot.pause()
+        assert app.frames == []

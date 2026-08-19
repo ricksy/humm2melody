@@ -34,7 +34,7 @@ def analyze_main(argv: list[str]) -> int:
     parser.add_argument(
         "--max-glide-rate",
         type=float,
-        default=3.0,
+        default=5.0,
         help="semitones/sec above which pitch counts as sliding; 0 disables",
     )
     args = parser.parse_args(argv)
