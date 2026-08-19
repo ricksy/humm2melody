@@ -7,12 +7,12 @@ most, because several of these are smaller than they look.
 Written to be picked up cold: assume the reader has not seen the conversation
 that produced them.
 
-## Status at v0.7.0
+## Status at v0.8.0
 
 | # | Item | State |
 | --- | --- | --- |
 | 0 | Calibrating and Training tabs | Calibrating **done**, Training still a placeholder |
-| 1 | Per-user vocal calibration | **done in v0.7.0** |
+| 1 | Per-user vocal calibration | **done**, and wired into detection in v0.8.0 |
 | 2 | Training mode | not started — **next**, and now unblocked by calibration |
 | 3 | Refresh the blog post | **stale** — the post still describes v0.1 |
 | 4 | Rhythm and quantisation | not started — the hard half already exists |
@@ -62,6 +62,14 @@ Two decisions worth keeping:
 Recorded per profile: range, tuning offset, drift while holding, how much the
 voice slides, accuracy against the melody in cents, and which register it was
 sung in.
+
+**Wired into detection in v0.8.0.** The measured range narrows YIN's search
+window, which is the one thing the dials cannot do — they tune segmentation,
+which runs after detection, so they can never undo an octave error. The tuning
+offset stands in when a run is too short to estimate its own reliably.
+
+Drift and style are recorded but deliberately not wired: the dial search
+already compensates for them, and applying both would double-correct.
 
 **Still open.** Whether the dials should show "your default" versus the global
 one. What happens when a later recording disagrees with the stored profile.

@@ -22,11 +22,12 @@ from textual.widgets import (
     Static,
     TabbedContent,
     TabPane,
+    Tabs,
 )
 
 from .audio import AudioError, Recorder
 from .calibration import STEPS as CALIBRATION_STEPS
-from .calibration import calibrate
+from .calibration import GLOBAL_FMAX, GLOBAL_FMIN, calibrate, voice_bounds
 from .pitch import NOTE_NAMES
 from .playback import MIX_DEFAULT, MIX_MAX, MIX_MIN, Player, mix_hum_with_tones
 from .profiles import DEFAULT_PROFILE_DIR, Profile, ProfileStore, guest
@@ -48,6 +49,9 @@ from .sessions import (
     read_pitch_track,
     read_wav,
 )
+
+TAB_IDS = ("tab-record", "tab-calibrate", "tab-train")
+DEFAULT_TAB = TAB_IDS[0]
 
 MAX_ROLL_ROWS = 32
 """Cap the piano roll's pitch range so one stray octave can't blow up the view."""
@@ -464,8 +468,57 @@ class ConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class CalibrationPane(Static):
-    """The Calibrating tab: three prompts, then what was learned."""
+STEP_NUMERALS = ("①", "②", "③", "④", "⑤")
+
+
+def _meter_bar(value: float, width: int = 14, filled: str = "█", empty: str = "░") -> str:
+    """A proportional bar. Used for anything measured on a 0..1 scale."""
+    take = int(round(max(0.0, min(1.0, value)) * width))
+    return filled * take + empty * (width - take)
+
+
+def _range_strip(low: int, high: int, width: int = 30) -> Text:
+    """A voice's range drawn against the span the detector can hear."""
+    lowest, highest = 36, 84  # C2 to C6, the useful singing span
+    text = Text()
+    for i in range(width):
+        midi = lowest + (highest - lowest) * i / max(1, width - 1)
+        if low <= midi <= high:
+            text.append("█", style=ACCENT)
+        else:
+            text.append("─", style="grey30")
+    return text
+
+
+def _tuning_gauge(cents: float, width: int = 21) -> Text:
+    """A tuner needle: flat on the left, sharp on the right, centre in tune."""
+    position = int(round((max(-50.0, min(50.0, cents)) + 50) / 100 * (width - 1)))
+    text = Text()
+    for i in range(width):
+        if i == position:
+            style = "green" if abs(cents) < 12 else "yellow"
+            text.append("●", style=f"bold {style}")
+        elif i == width // 2:
+            text.append("│", style="grey30")
+        else:
+            text.append("─", style="grey30")
+    return text
+
+
+class CalibrationPane(Vertical):
+    """The Calibrating tab: three prompts, live feedback, then what was learned."""
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="cal-title")
+        yield Static(id="cal-steps")
+        yield Static(id="cal-live")
+        yield LevelMeter(id="cal-meter")
+        with Horizontal(id="cal-buttons"):
+            yield ActionButton("●  Start", variant="success", id="cal-record")
+            yield ActionButton("♪  Hear the melody", id="cal-listen")
+            yield ActionButton("✓  Keep it", variant="primary", id="cal-keep")
+            yield ActionButton("↻  Start over", id="cal-reset")
+        yield Static(id="calibrate-body")
 
     def show(
         self,
@@ -475,79 +528,178 @@ class CalibrationPane(Static):
         takes: dict,
         result=None,
         live: str = "",
+        level: float = 0.0,
         profile=None,
         saved: bool = False,
     ) -> None:
         from .calibration import STEPS, describe
 
+        self._show_title()
+        self._show_steps(STEPS, step, recording, takes)
+        self._show_live(recording, live, level, step, STEPS)
+        self._show_buttons(step, recording, result, saved)
+        self._show_result(result, describe, profile, saved)
+
+    # -- pieces ------------------------------------------------------------
+
+    def _show_title(self) -> None:
         text = Text()
-        text.append("\n  Teach the app your voice\n\n", style="bold")
+        text.append("♪  Teach the app your voice\n", style=f"bold {ACCENT}")
         text.append(
-            "  Three short recordings. The app then works out the dial settings\n"
-            "  that best recover what you sang, instead of using defaults tuned\n"
-            "  for somebody else.\n\n",
+            "Three short takes. The dials are then set from what you actually "
+            "sang,\ninstead of from defaults tuned for somebody else.",
             style="dim",
         )
+        self.query_one("#cal-title", Static).update(text)
 
-        for index, item in enumerate(STEPS):
+    def _show_steps(self, steps, step, recording, takes) -> None:
+        text = Text()
+        for index, item in enumerate(steps):
             done = item.key in takes
             active = step == index
+
             if done:
                 marker, style = "✓", "green"
             elif active and recording:
-                marker, style = "●", HIGHLIGHT
+                marker, style = "●", "#f87171"
             elif active:
-                marker, style = "▸", "bold"
+                marker, style = "▸", f"bold {HIGHLIGHT}"
             else:
-                marker, style = " ", "dim"
+                marker, style = "·", "grey30"
 
-            text.append(f"   {marker} ", style=style)
-            text.append(f"{index + 1}. {item.title:<34}", style=style)
+            text.append(f"  {marker} ", style=style)
+            text.append(f"{STEP_NUMERALS[index]} ", style=style)
+            text.append(
+                f"{item.title:<32}",
+                style="bold" if (active or done) else "dim",
+            )
+
             if done:
-                text.append(takes[item.key], style="green")
+                text.append("♪ ", style=ACCENT)
+                text.append(f"{takes[item.key]}", style="green")
+            elif active and recording:
+                text.append("recording…", style="#f87171")
             elif active:
                 text.append(item.detail, style="dim")
             text.append("\n")
+        self.query_one("#cal-steps", Static).update(text)
 
-        text.append("\n")
+    def _show_live(self, recording, live, level, step, steps) -> None:
+        note = self.query_one("#cal-live", Static)
+        meter = self.query_one("#cal-meter", LevelMeter)
+        if not recording:
+            note.update(Text(""))
+            meter.show(0.0)
+            return
+
+        text = Text("   ")
+        text.append("● REC  ", style="bold #f87171")
+        if live:
+            text.append(f"♪ {live}", style=f"bold {ACCENT}")
+        else:
+            text.append("listening…", style="dim")
+        note.update(text)
+        meter.show(level)
+
+    def _show_buttons(self, step, recording, result, saved) -> None:
+        record = self.query_one("#cal-record", Button)
         if recording:
-            text.append("   ● recording — ", style=HIGHLIGHT)
-            text.append(live or "listening…", style="bold")
-            text.append("\n   press space when you have finished this step\n")
-        elif step is not None and step < len(STEPS):
-            text.append(
-                f"   press space to record step {step + 1}\n", style="bold"
+            record.label = "■  Done with this step"
+            record.variant = "error"
+        elif step is not None and step > 0:
+            record.label = f"●  Record step {step + 1}"
+            record.variant = "success"
+        elif result is not None:
+            record.label = "●  Calibrate again"
+            record.variant = "success"
+        else:
+            record.label = "●  Start"
+            record.variant = "success"
+
+        self.query_one("#cal-listen", Button).disabled = recording
+
+        # Say which state it is in. A greyed-out "Keep it" reads as a broken
+        # control, when what it actually means is that there was nothing left
+        # to do -- a confident calibration is adopted the moment it finishes.
+        keep = self.query_one("#cal-keep", Button)
+        keep.label = "✓  Saved" if saved else "✓  Keep it"
+        keep.disabled = result is None or saved
+        self.query_one("#cal-reset", Button).disabled = recording
+
+    def _show_result(self, result, describe, profile, saved) -> None:
+        body = self.query_one("#calibrate-body", Static)
+        if result is None:
+            body.update(
+                Text("   press space, or the button, to begin", style="dim")
             )
-        elif result is None:
-            text.append("   press space to begin\n", style="bold")
+            return
 
-        if result is not None:
-            text.append("\n  ")
-            text.append("─" * 52 + "\n", style="dim")
-            for label, value in describe(result.calibration):
-                text.append(f"   {label:<12}", style="bold")
-                text.append(f"{value}\n")
-            text.append("\n   ")
-            style = "green" if result.confident else "yellow"
-            text.append(result.message + "\n", style=style)
+        c = result.calibration
+        text = Text()
+        text.append("  ── what we learned " + "─" * 34 + "\n", style="dim")
 
-            if profile is not None and profile.is_guest:
-                text.append(
-                    "   Guest session, so this applies now but is not saved.\n",
-                    style="dim",
-                )
-            text.append("\n")
-            if saved:
-                text.append("   ✓ saved to your profile\n", style="green")
-                text.append("   press space to calibrate again\n", style="dim")
-            else:
-                text.append("   y  keep it anyway", style="bold")
-                text.append(
-                    "     — imperfect settings still beat none\n", style="dim"
-                )
-                text.append("   space  try again\n", style="bold")
+        if c.range_low_midi is not None and c.range_high_midi is not None:
+            text.append("   ♪ Range       ", style="bold")
+            text.append(_range_strip(c.range_low_midi, c.range_high_midi))
+            text.append(
+                f"  {_note_name(c.range_low_midi)}–{_note_name(c.range_high_midi)}"
+                f"  ({c.range_high_midi - c.range_low_midi} semitones)\n"
+            )
 
-        self.update(text)
+        if c.tuning_offset_cents is not None:
+            text.append("   ◎ Tuning      ", style="bold")
+            text.append(_tuning_gauge(c.tuning_offset_cents))
+            flat_sharp = "♯" if c.tuning_offset_cents > 0 else "♭"
+            text.append(
+                f"          {flat_sharp}{abs(c.tuning_offset_cents):.0f}¢\n"
+            )
+
+        if c.typical_drift_cents is not None:
+            steady = max(0.0, 1.0 - c.typical_drift_cents / 60.0)
+            text.append("   ~ Steadiness  ", style="bold")
+            text.append(_meter_bar(steady), style="green" if steady > 0.6 else "yellow")
+            text.append(f"                  {c.typical_drift_cents:.0f}¢ drift\n")
+
+        if c.glide_fraction is not None:
+            text.append("   ↝ Style       ", style="bold")
+            text.append(_meter_bar(c.glide_fraction), style=ACCENT_SHARP)
+            text.append(f"                  {c.glide_fraction * 100:.0f}% sliding\n")
+
+        if c.pitch_accuracy_cents is not None:
+            good = max(0.0, 1.0 - c.pitch_accuracy_cents / 200.0)
+            text.append("   ◈ Accuracy    ", style="bold")
+            text.append(_meter_bar(good), style="green" if good > 0.6 else "yellow")
+            text.append(
+                f"                  {c.pitch_accuracy_cents:.0f}¢ from the melody\n"
+            )
+
+        if c.transpose_semitones is not None and c.transpose_semitones != 0:
+            octaves, semis = divmod(abs(c.transpose_semitones), 12)
+            where = "down" if c.transpose_semitones < 0 else "up"
+            parts = []
+            if octaves:
+                parts.append(f"{octaves} octave{'s' if octaves > 1 else ''}")
+            if semis:
+                parts.append(f"{semis} semitone{'s' if semis > 1 else ''}")
+            text.append("   ⇅ Register    ", style="bold")
+            text.append(f"sung {' and '.join(parts)} {where}\n", style="dim")
+
+        text.append("\n   ")
+        text.append(result.message + "\n", style="green" if result.confident else "yellow")
+
+        if profile is not None and profile.is_guest:
+            text.append(
+                "   Guest session — this applies now but is not saved.\n",
+                style="dim",
+            )
+        if saved:
+            text.append("\n   ✓ saved to your profile\n", style="green")
+            text.append("   space  calibrate again\n", style="dim")
+        else:
+            text.append("\n   y  keep it anyway", style="bold")
+            text.append("     — imperfect settings still beat none\n", style="dim")
+            text.append("   space  try again\n", style="bold")
+        body.update(text)
 
 
 def _placeholder_training() -> Text:
@@ -743,7 +895,16 @@ class Humm2MelodyApp(App):
         padding: 0 1;
     }
     TabPane { padding: 0 1; }
-    #calibrate-body, #train-body { height: auto; }
+    #train-body { height: auto; }
+
+    #calibration { height: auto; padding: 1 2; }
+    #cal-title { height: auto; margin-bottom: 1; }
+    #cal-steps { height: auto; margin-bottom: 1; }
+    #cal-live { height: 1; }
+    #cal-meter { height: 1; margin-bottom: 1; }
+    #cal-buttons { height: auto; margin-bottom: 1; }
+    #cal-buttons Button { margin-right: 2; }
+    #calibrate-body { height: auto; }
     #sidebar-title { height: 1; text-style: bold; }
     #sidebar-path { height: auto; margin-bottom: 1; }
     #runs { height: 1fr; background: transparent; border: none; }
@@ -806,6 +967,10 @@ class Humm2MelodyApp(App):
         self.cal_frames: dict[str, list[PitchFrame]] = {}
         self.cal_result = None
         self.cal_saved = False
+        self.tuning_prior: float | None = None
+        # Startup activates the first tab, which would otherwise be recorded
+        # as "the tab you were last on" before the remembered one is restored.
+        self._tab_ready = False
         self.audio = None
         self.audio_rate = 0
         self.sessions: list[Session] = []
@@ -814,7 +979,7 @@ class Humm2MelodyApp(App):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with TabbedContent(initial="tab-record"):
+        with TabbedContent(initial=DEFAULT_TAB):
             with TabPane("Recording", id="tab-record"):
                 with Vertical(id="live"):
                     yield NoteReadout(id="readout")
@@ -845,7 +1010,7 @@ class Humm2MelodyApp(App):
                         yield Static(id="run-hint")
 
             with TabPane("Calibrating", id="tab-calibrate"):
-                yield CalibrationPane(id="calibrate-body")
+                yield CalibrationPane(id="calibration")
 
             with TabPane("Training", id="tab-train"):
                 yield Static(_placeholder_training(), id="train-body")
@@ -879,6 +1044,10 @@ class Humm2MelodyApp(App):
         # leave the sidebar's enter/up/down keys dead. ListView only binds
         # those three, so focusing it does not shadow any app-level key.
         self.query_one("#runs", ListView).focus()
+        # Deferred, because during on_mount the Tabs widget has not built its
+        # children yet and the assignment lands on nothing. TabbedContent's
+        # own `initial` is ignored in this Textual version.
+        self.call_after_refresh(self._restore_startup_tab)
         if self._ask_for_profile:
             self.action_switch_profile()
 
@@ -889,6 +1058,14 @@ class Humm2MelodyApp(App):
             self.action_play()
         elif event.button.id == "compare":
             self.action_cycle_source()
+        elif event.button.id == "cal-record":
+            self._toggle_calibration()
+        elif event.button.id == "cal-listen":
+            self._play_reference()
+        elif event.button.id == "cal-keep":
+            self.action_keep_calibration()
+        elif event.button.id == "cal-reset":
+            self._reset_calibration()
 
     # -- recording ---------------------------------------------------------
 
@@ -944,9 +1121,7 @@ class Humm2MelodyApp(App):
         self.frames = frames
         self.audio = audio if len(audio) else None
         self.audio_rate = self.recorder.sample_rate
-        self.notes = segment_with_sensitivity(
-            frames, self.sensitivity, self.pause_sensitivity
-        )
+        self.notes = self._segment(frames)
 
         button = self.query_one("#toggle", Button)
         button.label = "▶  Start humming"
@@ -1121,9 +1296,7 @@ class Humm2MelodyApp(App):
             except Exception:
                 self.audio, self.audio_rate = None, 0
         if self.frames:
-            self.notes = segment_with_sensitivity(
-                self.frames, self.sensitivity, self.pause_sensitivity
-            )
+            self.notes = self._segment(self.frames)
         else:
             self.notes = list(session.notes)
         self._show_notes(self.notes)
@@ -1138,19 +1311,20 @@ class Humm2MelodyApp(App):
     # -- calibration -------------------------------------------------------
 
     def _refresh_calibration(self) -> None:
-        pane = self._find("#calibrate-body", CalibrationPane)
+        pane = self._find("#calibration", CalibrationPane)
         if pane is None:
             return
-        live = ""
+        live, level = "", 0.0
         if self.recorder.running:
             reading = self.recorder.latest()
-            live = reading.note or "listening…"
+            live, level = reading.note, reading.level
         pane.show(
             step=self.cal_step,
             recording=self.recorder.running and self.cal_step is not None,
             takes=self.cal_takes,
             result=self.cal_result,
             live=live,
+            level=level,
             profile=self.profile,
             saved=self.cal_saved,
         )
@@ -1263,11 +1437,19 @@ class Humm2MelodyApp(App):
         self._refresh_calibration()
 
     def action_play_reference(self) -> None:
-        """Play the tune the user is being asked to sing back."""
-        from .calibration import reference_notes
-
+        """Play the reference tune. The key only applies on the Calibrating tab."""
         if self._active_tab() != "tab-calibrate":
             return
+        self._play_reference()
+
+    def _play_reference(self) -> None:
+        """Play the tune the user is being asked to sing back.
+
+        Separate from the action so the tab's own button can call it without
+        the tab check, which is trivially satisfied there anyway.
+        """
+        from .calibration import reference_notes
+
         if self.recorder.running:
             # Playing now would be recorded through the microphone.
             self._set_hint(
@@ -1294,6 +1476,9 @@ class Humm2MelodyApp(App):
         if profile is None:
             return
         self._apply_profile(profile)
+        # Safe to switch directly here: this only runs from a user action,
+        # long after mount, so there is nothing left to race with.
+        self._restore_tab_now(profile)
         if profile.is_guest:
             self._set_hint("Continuing as guest — settings will not be saved.")
         else:
@@ -1304,6 +1489,7 @@ class Humm2MelodyApp(App):
         self.sensitivity = profile.pitch_sensitivity
         self.pause_sensitivity = profile.pause_sensitivity
         self.mix = profile.mix
+        self._apply_calibrated_detection(profile)
         self.sub_title = f"{profile.name} · hum a melody, get the keyboard notes"
 
         for selector, kind, value in (
@@ -1317,6 +1503,70 @@ class Humm2MelodyApp(App):
         if self.frames:
             self._resegment()
         self._refresh_calibration()
+
+    def _restore_startup_tab(self) -> None:
+        """Open on the remembered tab, unless the user has already moved.
+
+        The restore is deferred, so it can arrive after a fast user has
+        switched tabs themselves. Only acting while still on the default tab
+        means it can never drag them back.
+        """
+        content = self._find("TabbedContent", TabbedContent)
+        if content is not None and content.active == DEFAULT_TAB:
+            self._restore_tab_now(self.profile)
+        self._tab_ready = True
+
+    def _restore_tab_now(self, profile: Profile) -> None:
+        """Switch to a profile's remembered tab, after startup.
+
+        Set through the Tabs widget rather than TabbedContent.active, which
+        reverts on the next refresh -- Tabs keys its tabs by a prefixed id and
+        syncs back over the assignment.
+        """
+        tabs = self._find("Tabs", Tabs)
+        content = self._find("TabbedContent", TabbedContent)
+        if tabs is None or content is None:
+            return
+        wanted = profile.last_tab if profile.last_tab in TAB_IDS else DEFAULT_TAB
+        if wanted != content.active:
+            try:
+                tabs.active = f"--content-tab-{wanted}"
+            except Exception:
+                pass  # a tab that no longer exists; stay where we are
+
+    def on_tabbed_content_tab_activated(
+        self, event: TabbedContent.TabActivated
+    ) -> None:
+        """Remember the tab, so the next session opens where this one left off."""
+        if not self._tab_ready:
+            return
+        active = self._active_tab()
+        if not active or self.profile.last_tab == active:
+            return
+        self.profile.last_tab = active
+        if not self.profile.is_guest:
+            try:
+                self.profiles.save(self.profile)
+            except OSError:
+                pass
+
+    def _apply_calibrated_detection(self, profile: Profile) -> None:
+        """Feed what calibration measured into detection itself.
+
+        Only two of the measurements are used, deliberately. The range narrows
+        YIN's search, which is something the dials cannot do at all: they tune
+        segmentation, which runs *after* pitch detection, so they can never
+        undo an octave error. The tuning offset stands in when a run is too
+        short to estimate its own. Drift and glide are left alone because the
+        dial search already compensates for them, and applying both would
+        correct for the same thing twice.
+        """
+        bounds = voice_bounds(profile.calibration)
+        fmin, fmax = bounds if bounds else (GLOBAL_FMIN, GLOBAL_FMAX)
+        for recorder in (self.recorder,):
+            if hasattr(recorder, "fmin"):
+                recorder.fmin, recorder.fmax = fmin, fmax
+        self.tuning_prior = profile.calibration.tuning_offset_cents
 
     def _remember_dials(self) -> None:
         """Persist dial positions to the profile. Guests are not remembered."""
@@ -1455,10 +1705,16 @@ class Humm2MelodyApp(App):
             f"{len(self.notes)} notes"
         )
 
-    def _resegment(self) -> None:
-        self.notes = segment_with_sensitivity(
-            self.frames, self.sensitivity, self.pause_sensitivity
+    def _segment(self, frames) -> list[Note]:
+        return segment_with_sensitivity(
+            frames,
+            self.sensitivity,
+            self.pause_sensitivity,
+            tuning_prior=self.tuning_prior,
         )
+
+    def _resegment(self) -> None:
+        self.notes = self._segment(self.frames)
         self._show_notes(self.notes)
 
     # -- comparison --------------------------------------------------------

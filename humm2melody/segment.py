@@ -71,6 +71,14 @@ def _median_filter(values: np.ndarray, size: int) -> np.ndarray:
     return out
 
 
+MIN_FRAMES_FOR_TUNING = 60
+"""Voiced frames needed before a run can estimate its own tuning offset.
+
+About 1.4 seconds of singing. Below that the estimate is dominated by whichever
+one or two notes happened to be sung, and shifting the whole grid on that basis
+does more harm than using a figure measured from calibration.
+"""
+
 VIBRATO_PERIOD = 0.23
 """Measurement window for glide rate: one cycle of slowish (~4.5 Hz) vibrato."""
 
@@ -184,6 +192,7 @@ def segment_notes(
     smoothing: int = 5,
     max_glide_rate: float | None = 5.0,
     tuning: str | float | None = "auto",
+    tuning_prior: float | None = None,
     max_step: float = 0.8,
     merge_within: float = 0.0,
     cluster_tolerance: float = 0.0,
@@ -203,6 +212,8 @@ def segment_notes(
 
     ``tuning`` shifts the semitone grid: ``"auto"`` estimates the offset from
     the recording, a number sets it in cents, ``None`` pins it to A440.
+    ``tuning_prior`` (cents, typically from a calibrated profile) is used
+    instead when a run is too short to estimate its own reliably.
 
     A note is decided from the *median* of a whole held region rather than by
     rounding each frame and grouping equal values. Voices drift: holding one
@@ -231,7 +242,14 @@ def segment_notes(
         smoothed[glide_mask(smoothed, times, max_glide_rate)] = np.nan
 
     if tuning == "auto":
-        offset = tuning_offset_semitones(smoothed)
+        voiced_count = int(np.count_nonzero(~np.isnan(smoothed)))
+        if voiced_count < MIN_FRAMES_FOR_TUNING and tuning_prior is not None:
+            # Too little to estimate from. A circular mean over a couple of
+            # notes swings wildly, and a wrong grid shift moves every note; a
+            # figure measured from a whole calibration take is steadier.
+            offset = tuning_prior / 100.0
+        else:
+            offset = tuning_offset_semitones(smoothed)
     elif tuning is None:
         offset = 0.0
     else:

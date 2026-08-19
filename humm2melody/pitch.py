@@ -173,6 +173,8 @@ def analyse_signal(
     *,
     frame_size: int = 2048,
     hop_size: int = 512,
+    fmin: float = 65.0,
+    fmax: float = 1200.0,
 ) -> list[PitchFrame]:
     """Run the sliding-window analysis over a whole recording.
 
@@ -184,7 +186,10 @@ def analyse_signal(
         window = audio[end - frame_size : end]
         time = (end - frame_size / 2) / sample_rate
         frames.append(
-            analyse_frame(window, sample_rate, time, energy_span=hop_size)
+            analyse_frame(
+                window, sample_rate, time, energy_span=hop_size,
+                fmin=fmin, fmax=fmax,
+            )
         )
     return frames
 
@@ -195,9 +200,11 @@ def analyse_frame(
     time: float,
     *,
     energy_span: int = 512,
+    fmin: float = 65.0,
+    fmax: float = 1200.0,
 ) -> PitchFrame:
     """Full analysis of one window: pitch, confidence and energy."""
-    freq, confidence = detect_pitch(frame, sample_rate)
+    freq, confidence = detect_pitch(frame, sample_rate, fmin=fmin, fmax=fmax)
     return PitchFrame(
         time=time,
         freq=freq,

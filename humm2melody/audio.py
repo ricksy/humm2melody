@@ -66,11 +66,17 @@ class Recorder:
         frame_size: int = FRAME_SIZE,
         hop_size: int = HOP_SIZE,
         device: int | str | None = None,
+        fmin: float = 65.0,
+        fmax: float = 1200.0,
     ) -> None:
         self.sample_rate = sample_rate
         self.frame_size = frame_size
         self.hop_size = hop_size
         self.device = device
+        # Narrowed by calibration when a voice range is known. Read at analysis
+        # time rather than captured, so adopting a profile takes effect at once.
+        self.fmin = fmin
+        self.fmax = fmax
 
         self._frames: list[PitchFrame] = []
         self._raw: list[np.ndarray] = []
@@ -187,7 +193,12 @@ class Recorder:
             # Timestamp the centre of the window, not its trailing edge.
             time = max(0.0, (samples_seen - self.frame_size / 2) / self.sample_rate)
             frame = analyse_frame(
-                buffer, self.sample_rate, time, energy_span=self.hop_size
+                buffer,
+                self.sample_rate,
+                time,
+                energy_span=self.hop_size,
+                fmin=self.fmin,
+                fmax=self.fmax,
             )
             with self._lock:
                 self._frames.append(frame)

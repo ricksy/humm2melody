@@ -50,9 +50,13 @@ def canned_frames() -> list[PitchFrame]:
 
 
 class FakeRecorder:
+    """Stands in for Recorder, and mirrors the attributes the app sets on it."""
+
     sample_rate = SR
 
     def __init__(self, frames=None, fail=False, audio=None):
+        self.fmin = 65.0
+        self.fmax = 1200.0
         self._frames = frames if frames is not None else canned_frames()
         self._fail = fail
         self._audio = (
@@ -827,7 +831,7 @@ async def test_the_recording_tab_holds_the_existing_ui(tmp_path: Path):
 async def test_the_other_tabs_explain_themselves(tmp_path: Path):
     app = make_app(tmp_path)
     async with app.run_test():
-        calibrate = str(app.query_one("#calibrate-body", Static).content)
+        calibrate = str(app.query_one("#cal-title", Static).content)
         train = str(app.query_one("#train-body", Static).content)
         assert "Teach the app your voice" in calibrate
         assert "Training" in train and "Not built yet" in train
@@ -989,6 +993,12 @@ async def goto_calibrate(app, pilot):
     """
     from textual.widgets import Tabs
 
+    # Let startup settle first. The remembered-tab restore is deferred by one
+    # refresh, and switching inside that window is not something a real user
+    # can do -- the app deliberately ignores tab changes until it has settled,
+    # so that the restore cannot drag them back.
+    await pilot.pause()
+
     app.query_one(Tabs).focus()
     await pilot.press("right")
     await pilot.pause()
@@ -1000,7 +1010,7 @@ async def test_calibration_starts_idle(tmp_path: Path):
     async with app.run_test() as pilot:
         await goto_calibrate(app, pilot)
         body = str(app.query_one("#calibrate-body", Static).content)
-        assert "press space to begin" in body
+        assert "to begin" in body
         assert app.cal_step is None
 
 
@@ -1174,3 +1184,175 @@ async def test_space_still_records_on_the_recording_tab(tmp_path: Path):
         await record_once(pilot)
         assert [n.name for n in app.notes] == ["C4", "E4", "G4"]
         assert app.cal_step is None
+
+
+# -- calibrated settings reaching the detector -----------------------------
+
+
+async def test_a_calibrated_profile_narrows_detection(tmp_path: Path):
+    from humm2melody.profiles import Calibration
+
+    store = ProfileStore(tmp_path / "profiles")
+    profile = store.create("Ahmed")
+    profile.calibration = Calibration(range_low_midi=47, range_high_midi=66)
+    store.save(profile)
+
+    app = make_app(tmp_path, profile=profile)
+    async with app.run_test():
+        assert app.recorder.fmin > 65.0
+        assert app.recorder.fmax < 1200.0
+
+
+async def test_an_uncalibrated_profile_leaves_detection_wide(tmp_path: Path):
+    store = ProfileStore(tmp_path / "profiles")
+    app = make_app(tmp_path, profile=store.create("Ahmed"))
+    async with app.run_test():
+        assert app.recorder.fmin == 65.0
+        assert app.recorder.fmax == 1200.0
+
+
+async def test_a_calibrated_tuning_offset_is_carried_as_a_prior(tmp_path: Path):
+    from humm2melody.profiles import Calibration
+
+    store = ProfileStore(tmp_path / "profiles")
+    profile = store.create("Ahmed")
+    profile.calibration = Calibration(tuning_offset_cents=31.0)
+    store.save(profile)
+
+    app = make_app(tmp_path, profile=profile)
+    async with app.run_test():
+        assert app.tuning_prior == 31.0
+
+
+async def test_switching_to_an_uncalibrated_profile_widens_again(tmp_path: Path):
+    """Adopting a profile must not leave the previous voice's bounds behind."""
+    from humm2melody.profiles import Calibration, guest
+
+    store = ProfileStore(tmp_path / "profiles")
+    calibrated = store.create("Ahmed")
+    calibrated.calibration = Calibration(range_low_midi=47, range_high_midi=66)
+
+    app = make_app(tmp_path, profile=calibrated)
+    async with app.run_test() as pilot:
+        assert app.recorder.fmin > 65.0
+        app._apply_profile(guest())
+        await pilot.pause()
+        assert app.recorder.fmin == 65.0
+        assert app.tuning_prior is None
+
+
+# -- remembering the tab ---------------------------------------------------
+
+
+async def test_the_active_tab_is_remembered(tmp_path: Path):
+    store = ProfileStore(tmp_path / "profiles")
+    app = make_app(tmp_path, profile=store.create("Ahmed"))
+    async with app.run_test() as pilot:
+        await goto_calibrate(app, pilot)
+
+    assert store.list()[0].last_tab == "tab-calibrate"
+
+
+async def test_the_remembered_tab_is_reopened(tmp_path: Path):
+    store = ProfileStore(tmp_path / "profiles")
+    profile = store.create("Ahmed")
+    profile.last_tab = "tab-calibrate"
+    store.save(profile)
+
+    app = make_app(tmp_path, profile=store.list()[0])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._active_tab() == "tab-calibrate"
+
+
+async def test_a_new_profile_opens_on_recording(tmp_path: Path):
+    store = ProfileStore(tmp_path / "profiles")
+    app = make_app(tmp_path, profile=store.create("Ahmed"))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._active_tab() == "tab-record"
+
+
+async def test_a_guest_does_not_persist_the_tab(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await goto_calibrate(app, pilot)
+        assert app.profile.last_tab == "tab-calibrate"  # for this session only
+    assert not list((tmp_path / "profiles").glob("*.json"))
+
+
+async def test_an_unknown_remembered_tab_falls_back(tmp_path: Path):
+    """A profile from a future version must not break startup."""
+    store = ProfileStore(tmp_path / "profiles")
+    profile = store.create("Ahmed")
+    profile.last_tab = "tab-that-does-not-exist"
+    store.save(profile)
+
+    app = make_app(tmp_path, profile=store.list()[0])
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert app._active_tab() == "tab-record"
+
+
+async def test_a_confident_calibration_is_adopted_immediately(tmp_path: Path):
+    """And the keep button says so, rather than just going grey."""
+    from humm2melody.calibration import REFERENCE_MIDIS
+    from tests.test_segment import analyse, legato
+    import numpy as np
+
+    def sung():
+        parts = []
+        for midi in REFERENCE_MIDIS:
+            parts.append(legato([midi], hold=0.42, vibrato=0.18))
+            parts.append(np.zeros(int(0.16 * SR), dtype=np.float32))
+        return np.concatenate(parts).astype(np.float32)
+
+    takes = [
+        analyse(legato([47], hold=2.0)),
+        analyse(legato([66], hold=2.0)),
+        analyse(sung()),
+    ]
+
+    class Sequenced(FakeRecorder):
+        def __init__(self):
+            super().__init__()
+            self.index = 0
+
+        def stop(self):
+            self.running = False
+            frames = takes[min(self.index, 2)]
+            self.index += 1
+            return frames
+
+    store = ProfileStore(tmp_path / "profiles")
+    app = make_app(tmp_path, profile=store.create("Ahmed"))
+    app.recorder = Sequenced()
+    async with app.run_test() as pilot:
+        await goto_calibrate(app, pilot)
+        for _ in range(3):
+            await pilot.press("space")
+            await pilot.press("space")
+        await pilot.pause()
+
+        assert app.cal_result.confident is True
+        assert app.cal_saved is True
+        keep = app.query_one("#cal-keep", Button)
+        assert keep.disabled is True
+        assert "Saved" in str(keep.label)
+        assert store.list()[0].calibration.is_empty is False
+
+
+async def test_the_keep_button_is_offered_when_not_confident(tmp_path: Path):
+    store = ProfileStore(tmp_path / "profiles")
+    app = make_app(tmp_path, profile=store.create("Ahmed"))
+    async with app.run_test() as pilot:
+        await goto_calibrate(app, pilot)
+        for _ in range(3):
+            await pilot.press("space")
+            await pilot.press("space")
+        await pilot.pause()
+
+        keep = app.query_one("#cal-keep", Button)
+        assert app.cal_saved is False
+        assert keep.disabled is False
+        assert "Keep it" in str(keep.label)

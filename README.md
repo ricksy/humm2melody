@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (335 tests, no microphone required). But treat it
+> It works, and it is tested (356 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
@@ -38,7 +38,8 @@ A profile stores the dial positions you have settled on, and is where
 calibration will record what it learns about your voice. Each profile is a
 single JSON file under `profiles/`, so one can be copied, edited by hand or
 deleted without touching anything else. Deleting a profile keeps its
-recordings. Press `u` to switch profile at any time.
+recordings. Press `u` to switch profile at any time. The app also reopens on whichever tab
+you were last using, remembered per profile.
 
 ```bash
 uv run humm2melody --guest              # skip the chooser
@@ -81,6 +82,40 @@ tuning and steadiness are measured from the singing itself and hold regardless
 of whether the melody was matched, so there is usually something worth keeping —
 imperfect settings still beat none. Only accuracy and register need the melody
 to line up, and they are withheld when they cannot be computed.
+
+The pane shows live feedback while you sing — a record indicator, the note it
+is hearing, an input meter — and afterwards draws what it learned: your range
+against the singable span, a tuner needle for your tuning offset, and bars for
+steadiness, style and accuracy. Buttons mirror every key, so none of it has to
+be memorised.
+
+A confident calibration is adopted the moment it finishes — the **Saved** button
+is showing state, not a control you missed. When the app is unsure it adopts
+nothing and offers **Keep it** instead.
+
+### What calibration feeds back into detection
+
+Two of the measurements change how the app listens; the rest are recorded but
+deliberately unused.
+
+| Measurement | Effect |
+| --- | --- |
+| **Range** | narrows YIN's search to your voice plus a fifth either side |
+| **Tuning offset** | stands in when a run is too short to estimate its own |
+| Drift, style, accuracy, register | recorded only — see below |
+
+Narrowing the search is the one thing a measured range can do that the dials
+cannot. The dials tune *segmentation*, which runs after pitch detection, so
+they can never undo an octave error; YIN can only report a harmonic or
+subharmonic that falls inside its search window, and a window that stops short
+of one simply cannot produce it. For a B2–F#4 voice the window narrows from
+65–1200 Hz to 82–554 Hz, about 42% of the original.
+
+Drift and style are **not** wired in on purpose: the dial search already
+compensates for them, and applying both would correct for the same thing twice.
+A range narrower than a fourth is ignored as a failed measurement rather than
+trusted — nobody's range is one note, and constraining detection around a bad
+reading would make notes vanish.
 
 The Training tab is still a placeholder. See `docs/ROADMAP.md`.
 

@@ -98,11 +98,15 @@ class DemoRecorder:
         hop_size: int = HOP_SIZE,
         audio: np.ndarray | None = None,
         realtime: bool = True,
+        fmin: float = 65.0,
+        fmax: float = 1200.0,
     ) -> None:
         self.sample_rate = sample_rate
         self.frame_size = frame_size
         self.hop_size = hop_size
         self.realtime = realtime
+        self.fmin = fmin
+        self.fmax = fmax
         self._source = synth_hum(sample_rate=sample_rate) if audio is None else audio
 
         self._frames: list[PitchFrame] = []
@@ -185,7 +189,12 @@ class DemoRecorder:
                     0.0, (samples_seen - self.frame_size / 2) / self.sample_rate
                 )
                 frame = analyse_frame(
-                    buffer, self.sample_rate, time_s, energy_span=self.hop_size
+                    buffer,
+                    self.sample_rate,
+                    time_s,
+                    energy_span=self.hop_size,
+                    fmin=self.fmin,
+                    fmax=self.fmax,
                 )
                 with self._lock:
                     self._frames.append(frame)

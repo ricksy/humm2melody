@@ -399,3 +399,33 @@ def test_a_separate_attack_survives_pitch_clustering():
     frames = analyse(struck(gap=0.02))
     notes = segment_with_sensitivity(frames, 1, pause_level=7)
     assert len(notes) == 3
+
+
+# -- calibrated priors -----------------------------------------------------
+
+
+def test_a_short_run_uses_the_tuning_prior():
+    """Two notes is not enough to estimate a grid shift from."""
+    frames = track([(midi_to_hz(60.4), 0.35), (None, 0.2), (midi_to_hz(64.4), 0.35)])
+    without = segment_notes(frames, tuning="auto")
+    withprior = segment_notes(frames, tuning="auto", tuning_prior=40.0)
+    assert [n.name for n in withprior] == ["C4", "E4"]
+    assert len(without) == len(withprior)
+
+
+def test_a_long_run_ignores_the_prior_and_measures_itself():
+    """Given enough singing, the recording is the better authority."""
+    spec = []
+    for freq in (midi_to_hz(60.4), midi_to_hz(62.4), midi_to_hz(64.4)):
+        spec.append((freq, 0.8))
+        spec.append((None, 0.2))
+    frames = track(spec)
+    wild_prior = segment_notes(frames, tuning="auto", tuning_prior=-45.0)
+    measured = segment_notes(frames, tuning="auto")
+    assert [n.name for n in wild_prior] == [n.name for n in measured]
+
+
+def test_the_prior_is_ignored_when_tuning_is_pinned():
+    frames = track([(midi_to_hz(60.4), 0.35)])
+    pinned = segment_notes(frames, tuning=None, tuning_prior=40.0)
+    assert [n.name for n in pinned] == ["C4"]

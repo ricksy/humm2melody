@@ -409,3 +409,67 @@ def test_describe_grades_steadiness():
     assert "wanders" in dict(describe(Calibration(typical_drift_cents=45)))[
         "Steadiness"
     ]
+
+
+# -- feeding the detector --------------------------------------------------
+
+
+def test_no_bounds_without_a_measured_range():
+    from humm2melody.calibration import voice_bounds
+
+    assert voice_bounds(Calibration()) is None
+    assert voice_bounds(Calibration(range_low_midi=48)) is None
+
+
+def test_bounds_bracket_the_measured_range_with_headroom():
+    from humm2melody.calibration import RANGE_MARGIN_SEMITONES, voice_bounds
+    from humm2melody.pitch import hz_to_midi
+
+    low, high = 47, 66
+    fmin, fmax = voice_bounds(Calibration(range_low_midi=low, range_high_midi=high))
+    assert hz_to_midi(fmin) == pytest.approx(low - RANGE_MARGIN_SEMITONES, abs=0.1)
+    assert hz_to_midi(fmax) == pytest.approx(high + RANGE_MARGIN_SEMITONES, abs=0.1)
+
+
+def test_bounds_never_exceed_the_global_limits():
+    from humm2melody.calibration import GLOBAL_FMAX, GLOBAL_FMIN, voice_bounds
+
+    fmin, fmax = voice_bounds(Calibration(range_low_midi=24, range_high_midi=100))
+    assert fmin >= GLOBAL_FMIN
+    assert fmax <= GLOBAL_FMAX
+
+
+def test_range_sung_backwards_still_gives_sane_bounds():
+    from humm2melody.calibration import voice_bounds
+
+    fmin, fmax = voice_bounds(Calibration(range_low_midi=66, range_high_midi=47))
+    assert fmin < fmax
+
+
+def test_an_implausibly_narrow_range_does_not_constrain():
+    """Nobody's range is one note; that is a failed measurement, not a singer."""
+    from humm2melody.calibration import voice_bounds
+
+    assert voice_bounds(Calibration(range_low_midi=60, range_high_midi=60)) is None
+    assert voice_bounds(Calibration(range_low_midi=60, range_high_midi=62)) is None
+    assert voice_bounds(Calibration(range_low_midi=60, range_high_midi=72)) is not None
+
+
+def test_detection_never_reports_outside_the_calibrated_bounds():
+    """The point of narrowing: a harmonic outside the window cannot be returned."""
+    from humm2melody.pitch import analyse_signal
+
+    audio = legato([69], hold=1.0)
+    for frame in analyse_signal(audio, SR, fmin=200.0, fmax=500.0):
+        assert frame.freq == 0.0 or 200.0 <= frame.freq <= 500.0
+
+
+def test_narrow_bounds_change_what_is_heard():
+    """Excluding a voice's octave forces a different answer, not the same one."""
+    from humm2melody.pitch import analyse_signal
+
+    audio = legato([45], hold=1.0)  # A2, 110 Hz
+    wide = [f.freq for f in analyse_signal(audio, SR) if f.freq]
+    narrow = [f.freq for f in analyse_signal(audio, SR, fmin=180.0, fmax=900.0) if f.freq]
+    assert wide and min(wide) < 180.0
+    assert all(f >= 180.0 for f in narrow)

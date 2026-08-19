@@ -286,6 +286,53 @@ def calibrate(
     )
 
 
+RANGE_MARGIN_SEMITONES = 7
+"""Headroom either side of a measured range, before it constrains detection.
+
+A fifth. Calibration measures a *comfortable* range, not a limit, and a note
+sung outside the bounds is not detected at all — so the cost of being too tight
+is silence, while the cost of being too loose is only that some octave errors
+survive. The asymmetry argues for generosity.
+"""
+
+GLOBAL_FMIN = 65.0
+GLOBAL_FMAX = 1200.0
+
+MIN_TRUSTED_RANGE_SEMITONES = 5
+"""How wide a measured range must be before it is allowed to narrow detection.
+
+Anyone can sing more than a fourth. A range narrower than this means the two
+range takes did not capture two different notes — the same note sung twice, or
+one of them missed — and constraining the detector around a bad measurement
+would make notes vanish rather than merely mis-snap.
+"""
+
+
+def voice_bounds(
+    calibration: Calibration, margin: int = RANGE_MARGIN_SEMITONES
+) -> tuple[float, float] | None:
+    """Detection bounds implied by a measured range, or None if uncalibrated.
+
+    Narrowing the search is the one thing a measured range can do that the
+    dials cannot: the dials tune *segmentation*, which runs after pitch
+    detection, so they cannot undo an octave error. YIN can only report a
+    subharmonic or harmonic that falls inside its search window, so a window
+    that stops short of one simply cannot produce it.
+    """
+    low, high = calibration.range_low_midi, calibration.range_high_midi
+    if low is None or high is None:
+        return None
+    if low > high:
+        low, high = high, low
+
+    if high - low < MIN_TRUSTED_RANGE_SEMITONES:
+        return None
+
+    fmin = max(GLOBAL_FMIN, midi_to_hz(low - margin))
+    fmax = min(GLOBAL_FMAX, midi_to_hz(high + margin))
+    return float(fmin), float(fmax)
+
+
 def describe(calibration: Calibration) -> list[tuple[str, str]]:
     """Human-readable rows for the calibration panel."""
     rows: list[tuple[str, str]] = []
