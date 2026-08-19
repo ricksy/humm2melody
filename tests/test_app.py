@@ -89,10 +89,12 @@ class FakePlayer:
         self.buffer = None
         self.sample_rate = SR
         self.speed = 1.0
+        self.voice = "pure"
 
-    def play(self, notes, speed=1.0):
+    def play(self, notes, speed=1.0, voice="pure"):
         self.played = list(notes)
         self.speed = speed
+        self.voice = voice
         self.playing = True
         self.position = 0.0
 
@@ -118,6 +120,13 @@ def make_app(tmp_path: Path, save: bool = True, profile=None, **kwargs):
     app.recorder = FakeRecorder(**kwargs)
     app.player = FakePlayer()
     return app
+
+
+class _Click:
+    """The couple of fields a widget's on_click actually reads."""
+
+    def __init__(self, x: int, y: int) -> None:
+        self.x, self.y = x, y
 
 
 async def click_button(app, pilot, selector: str) -> None:
@@ -2232,3 +2241,178 @@ async def test_the_notes_lit_follow_the_tempo(tmp_path: Path):
         app.player.position = ((target.start + target.end) / 2) / 2.0
         app._tick_playback()
         assert app.query_one("#piano", PianoKeys)._lit == {target.midi}
+
+
+# -- composing on the keyboard ---------------------------------------------
+
+
+def _key_width(piano) -> int:
+    return (piano.size.width - 2) // len(piano._white_keys())
+
+
+def _white_hit(piano, index: int) -> tuple[int, int]:
+    """A point inside the body of the nth white key."""
+    width = _key_width(piano)
+    return (index * width + width // 2 + 1, piano.BLACK_ROWS + 2)
+
+
+def _black_hit(piano, white_index: int) -> tuple[int, int]:
+    """A point on the black key sitting to the right of the nth white key."""
+    return ((white_index + 1) * _key_width(piano) + 1, 1)
+
+
+def _hit_for(piano, midi: int) -> tuple[int, int]:
+    """Where to click for a given pitch, in the layout as it stands now.
+
+    Recomputed per click, because adding a note can widen the keyboard's
+    range and shift every key along.
+    """
+    return _white_hit(piano, piano._white_keys().index(midi))
+
+
+async def test_clicking_a_white_key_adds_that_note(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(156, 60)) as pilot:
+        await record_once(pilot)
+        piano = app.query_one("#piano", PianoKeys)
+        before = len(app.notes)
+
+        wanted = piano._white_keys()[2]
+        piano.on_click(_Click(*_white_hit(piano, 2)))
+        await pilot.pause()
+
+        assert len(app.notes) == before + 1
+        assert app.notes[app.selected_note].midi == wanted
+
+
+async def test_clicking_a_black_key_adds_a_sharp(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(156, 60)) as pilot:
+        await record_once(pilot)
+        piano = app.query_one("#piano", PianoKeys)
+
+        wanted = piano._white_keys()[0] + 1  # the C sharp
+        piano.on_click(_Click(*_black_hit(piano, 0)))
+        await pilot.pause()
+        assert app.notes[app.selected_note].midi == wanted
+
+
+async def test_the_lower_half_of_a_black_key_hits_the_white_one(tmp_path: Path):
+    """Like a real keyboard: below the black keys, the white key takes it."""
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(156, 60)) as pilot:
+        await record_once(pilot)
+        piano = app.query_one("#piano", PianoKeys)
+        x, _ = _black_hit(piano, 0)
+        below = piano.key_at(x, piano.BLACK_ROWS + 2)
+        assert below in (piano._white_keys()[0], piano._white_keys()[1])
+        assert below % 12 in (0, 2)  # a white key, not the sharp above it
+
+
+async def test_composing_a_phrase_by_clicking(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(156, 60)) as pilot:
+        await record_once(pilot)
+        await pilot.press("c")  # start from an empty transcription
+        await pilot.pause()
+        piano = app.query_one("#piano", PianoKeys)
+
+        wanted = [piano._white_keys()[i] for i in (0, 1, 2)]
+        for midi in wanted:
+            piano.on_click(_Click(*_hit_for(piano, midi)))
+            await pilot.pause()
+
+        assert [n.midi for n in app.notes] == wanted
+        starts = [n.start for n in app.notes]
+        assert starts == sorted(starts)  # laid out in the order they were played
+
+
+async def test_clicking_a_key_starts_editing(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(156, 60)) as pilot:
+        await record_once(pilot)
+        assert app.editing is False
+        piano = app.query_one("#piano", PianoKeys)
+        piano.on_click(_Click(*_white_hit(piano, 1)))
+        await pilot.pause()
+        assert app.editing is True
+
+
+async def test_a_clicked_key_is_sounded(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(156, 60)) as pilot:
+        await record_once(pilot)
+        piano = app.query_one("#piano", PianoKeys)
+        wanted = piano._white_keys()[3]
+        piano.on_click(_Click(*_white_hit(piano, 3)))
+        await pilot.pause()
+
+        assert app.player.playing is True
+        assert [n.midi for n in app.player.played] == [wanted]
+
+
+async def test_a_clicked_note_can_be_undone(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(156, 60)) as pilot:
+        await record_once(pilot)
+        before = [n.midi for n in app.notes]
+        piano = app.query_one("#piano", PianoKeys)
+        piano.on_click(_Click(*_white_hit(piano, 2)))
+        await pilot.pause()
+
+        await pilot.press("z")
+        await pilot.pause()
+        assert [n.midi for n in app.notes] == before
+
+
+async def test_clicking_outside_the_keys_adds_nothing(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(156, 60)) as pilot:
+        await record_once(pilot)
+        piano = app.query_one("#piano", PianoKeys)
+        before = len(app.notes)
+        piano.on_click(_Click(0, 0))            # the border
+        piano.on_click(_Click(2, 99))           # below the keys
+        await pilot.pause()
+        assert len(app.notes) == before
+
+
+async def test_v_cycles_the_voice_and_reaches_playback(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test(size=(156, 60)) as pilot:
+        await record_once(pilot)
+        assert app.voice == "pure"
+
+        await pilot.press("v")
+        await pilot.pause()
+        assert app.voice == "rich"
+
+        await pilot.press("p")
+        await pilot.pause()
+        assert app.player.voice == "rich"
+
+
+async def test_the_voice_is_remembered_per_profile(tmp_path: Path):
+    store = ProfileStore(tmp_path / "profiles")
+    app = make_app(tmp_path, profile=store.create("Ahmed"))
+    async with app.run_test(size=(156, 60)) as pilot:
+        await pilot.press("v")
+        await pilot.press("v")
+        await pilot.pause()
+    assert store.list()[0].voice == "chord"

@@ -38,7 +38,11 @@ from .playback import (
     TEMPO_MAX,
     TEMPO_MIN,
     Player,
+    VOICE_LABELS,
+    VOICE_NOTES,
+    VOICES,
     mix_hum_with_tones,
+    next_voice,
     tempo_speed,
 )
 from .profiles import DEFAULT_PROFILE_DIR, Profile, ProfileStore, guest
@@ -176,6 +180,22 @@ class TempoDial(Dial):
                 f"faster — {speed:.2f}×",
             ),
         )
+
+
+class VoiceRow(Static):
+    """How full the playback sounds: one tone, or notes stacked with it."""
+
+    def show(self, voice: str) -> None:
+        text = Text(f"{'Voice':<11}", style="bold")
+        text.append("v    ", style="dim")
+        for key in VOICES:
+            label = VOICE_LABELS[key]
+            if key == voice:
+                text.append(f" {label} ", style=f"bold black on {HIGHLIGHT}")
+            else:
+                text.append(f" {label} ", style="grey42")
+        text.append(f"   {VOICE_NOTES[voice]}", style="dim")
+        self.update(text)
 
 
 class NotationRow(Static):
@@ -1050,6 +1070,9 @@ class PianoKeys(Static):
         self._high = 71
         self._lit: set[int] = set()
         self._scheme = "english"
+        # Column maps from the last draw, so a click can find the key under it.
+        self._owner: list[int | None] = []
+        self._black: list[int | None] = []
 
     def set_range(self, notes: list[Note], scheme: str = "english") -> None:
         """Cover the melody, rounded outwards to whole octaves."""
@@ -1072,6 +1095,35 @@ class PianoKeys(Static):
 
     def on_resize(self) -> None:
         self.refresh_keys()
+
+    def on_click(self, event) -> None:
+        midi = self.key_at(event.x, event.y)
+        if midi is not None:
+            self.app.piano_key_pressed(midi)
+
+    def key_at(self, x: int, y: int) -> int | None:
+        """The key under a point, in the widget's own coordinates.
+
+        A black key is only hit in the upper rows, where it is actually drawn;
+        below that the white key it overlaps takes the click, which is how a
+        real keyboard behaves.
+        """
+        column = x - 1  # the widget's border
+        row = y - 1
+        if not (0 <= column < len(self._owner)):
+            return None
+        if row < 0 or row >= self.BLACK_ROWS + self.WHITE_ROWS:
+            return None
+        if row < self.BLACK_ROWS and self._black[column] is not None:
+            return self._black[column]
+
+        # The separator between two white keys owns nothing, and it sits
+        # directly under every black key -- so without this, clicking just
+        # below a black key would land on dead space.
+        for probe in (column, column - 1, column + 1):
+            if 0 <= probe < len(self._owner) and self._owner[probe] is not None:
+                return self._owner[probe]
+        return None
 
     def _white_keys(self) -> list[int]:
         return [
@@ -1134,6 +1186,8 @@ class PianoKeys(Static):
             name = self._label_for(midi, room)
             pad = (room - len(name)) // 2
             labels_by_key[midi] = " " * pad + name
+
+        self._owner, self._black = owner, black
 
         out = Text()
         for row in range(self.BLACK_ROWS + self.WHITE_ROWS):
@@ -1239,6 +1293,7 @@ class Humm2MelodyApp(App):
     #pause { height: 1; margin: 0 2 0 2; }
     #mix { height: 1; margin: 0 2 0 2; }
     #tempo { height: 1; margin: 0 2 0 2; }
+    #voice { height: 1; margin: 0 2 0 2; }
     #notation { height: 1; margin: 0 2 0 2; }
 
     #main { height: 1fr; margin: 1 2; }
@@ -1285,6 +1340,7 @@ class Humm2MelodyApp(App):
         ("y", "keep_calibration", "Keep calibration"),
         ("less_than_sign", "slower", "Slower"),
         ("greater_than_sign", "faster", "Faster"),
+        ("v", "cycle_voice", "Voice"),
         ("n", "cycle_notation", "Notation"),
         ("e", "edit_notes", "Edit notes"),
         ("minus", "less_tones", "More hum"),
@@ -1324,6 +1380,7 @@ class Humm2MelodyApp(App):
         self.source = "tones"
         self.mix = MIX_DEFAULT
         self.tempo = TEMPO_DEFAULT
+        self.voice = "pure"
         # Calibration state: which step is next, what has been captured.
         self.cal_step: int | None = None
         self.cal_takes: dict[str, str] = {}
@@ -1355,6 +1412,7 @@ class Humm2MelodyApp(App):
                 yield PauseDial(id="pause")
                 yield MixDial(id="mix")
                 yield TempoDial(id="tempo")
+                yield VoiceRow(id="voice")
                 yield NotationRow(id="notation")
                 with Horizontal(id="main"):
                     with VerticalScroll(id="results"):
@@ -1401,6 +1459,7 @@ class Humm2MelodyApp(App):
         self.query_one("#pause", PauseDial).show(self.pause_sensitivity)
         self.query_one("#mix", MixDial).show(self.mix)
         self.query_one("#tempo", TempoDial).show(self.tempo)
+        self.query_one("#voice", VoiceRow).show(self.voice)
         self.query_one("#notation", NotationRow).show(self.notation)
         self._apply_profile(self.profile)
         self._refresh_calibration()
@@ -1565,7 +1624,9 @@ class Humm2MelodyApp(App):
                 # Tempo applies to the tones only. Speeding your own recording
                 # up would need time-stretching, and simply resampling it would
                 # transpose the very pitches being checked.
-                self.player.play(self.notes, speed=tempo_speed(self.tempo))
+                self.player.play(
+                    self.notes, speed=tempo_speed(self.tempo), voice=self.voice
+                )
             elif self.source == "hum":
                 self.player.play_audio(self.audio, self.audio_rate)
             else:
@@ -1577,6 +1638,7 @@ class Humm2MelodyApp(App):
                         self.notes,
                         rate,
                         balance=self.mix,
+                        voice=self.voice,
                     ),
                     rate,
                 )
@@ -1842,20 +1904,45 @@ class Humm2MelodyApp(App):
             return int(round(hz_to_midi(float(np.median(voiced)))))
         return 60
 
-    def edit_insert(self) -> None:
-        """Add a note detection missed, after the selected one."""
-        if not self.editing:
+    def piano_key_pressed(self, midi: int) -> None:
+        """Add a note by clicking a key, and sound it.
+
+        Composing this way should not require finding edit mode first, so the
+        first click enters it. Everything a clicked note needs afterwards --
+        moving, retuning, deleting, undo -- already works.
+        """
+        if self._active_tab() != "tab-record":
             return
 
-        midi = self._default_pitch()
+        if not self.editing:
+            self.editing = True
+            roll = self._find("#roll", PianoRoll)
+            if roll is not None:
+                roll.focus()
+
+        self._push_undo()
+        added = self._new_note(midi)
+        self._commit(self.notes + [added], added)
+
+        piano = self._find("#piano", PianoKeys)
+        if piano is not None:
+            piano.light({midi})
+        self._preview(midi)
+        self._set_hint(
+            f"Added {spell(midi, self.notation)} — , . to move · - = length · z undo"
+        )
+
+    def _new_note(self, midi: int) -> Note:
+        """A note placed after whatever is currently selected."""
         if self.notes and self.selected_note is not None:
             after = self.notes[self.selected_note]
-            start = after.end + self.INSERT_GAP
-            length = after.duration
+            start, length = after.end + self.INSERT_GAP, after.duration
+        elif self.notes:
+            last = max(self.notes, key=lambda n: n.end)
+            start, length = last.end + self.INSERT_GAP, self.DEFAULT_NEW_DURATION
         else:
             start, length = 0.0, self.DEFAULT_NEW_DURATION
-
-        added = Note(
+        return Note(
             midi=midi,
             start=start,
             end=start + length,
@@ -1864,9 +1951,36 @@ class Humm2MelodyApp(App):
             pitch=float(midi),
             attack=True,
         )
+
+    def _preview(self, midi: int) -> None:
+        """Sound a single key, so composing is audible as well as visible."""
+        try:
+            self.player.play(
+                [
+                    Note(
+                        midi=midi,
+                        start=0.0,
+                        end=0.4,
+                        freq=midi_to_hz(midi),
+                        confidence=1.0,
+                        pitch=float(midi),
+                    )
+                ]
+            )
+        except Exception:
+            pass
+
+    def edit_insert(self) -> None:
+        """Add a note detection missed, after the selected one."""
+        if not self.editing:
+            return
+
+        added = self._new_note(self._default_pitch())
         self._push_undo()
         self._commit(self.notes + [added], added)
-        self._set_hint(f"Added {spell(midi, self.notation)} — move it with , . ↑ ↓")
+        self._set_hint(
+            f"Added {spell(added.midi, self.notation)} — move it with , . ↑ ↓"
+        )
 
     def edit_remove(self) -> None:
         """Drop a note that should not be there."""
@@ -2150,6 +2264,7 @@ class Humm2MelodyApp(App):
         self.pause_sensitivity = profile.pause_sensitivity
         self.mix = profile.mix
         self.tempo = profile.tempo
+        self.voice = profile.voice
         self.notation = profile.notation
         self._apply_calibrated_detection(profile)
         self.sub_title = f"{profile.name} · hum a melody, get the keyboard notes"
@@ -2159,6 +2274,7 @@ class Humm2MelodyApp(App):
             ("#pause", PauseDial, self.pause_sensitivity),
             ("#mix", MixDial, self.mix),
             ("#tempo", TempoDial, self.tempo),
+            ("#voice", VoiceRow, self.voice),
             ("#notation", NotationRow, self.notation),
         ):
             dial = self._find(selector, kind)
@@ -2240,6 +2356,7 @@ class Humm2MelodyApp(App):
         self.profile.pause_sensitivity = self.pause_sensitivity
         self.profile.mix = self.mix
         self.profile.tempo = self.tempo
+        self.profile.voice = self.voice
         self.profile.notation = self.notation
         try:
             self.profiles.save(self.profile)
@@ -2460,6 +2577,17 @@ class Humm2MelodyApp(App):
             dial.show(level)
         if self.source == "both":
             self._set_hint(f"Mix {level}/{MIX_MAX} — press p to hear it.")
+
+    def action_cycle_voice(self) -> None:
+        """Switch between a bare tone and notes stacked with it."""
+        self.voice = next_voice(self.voice)
+        row = self._find("#voice", VoiceRow)
+        if row is not None:
+            row.show(self.voice)
+        self._remember_dials()
+        self._set_hint(
+            f"{VOICE_LABELS[self.voice]} — {VOICE_NOTES[self.voice]}. Press p."
+        )
 
     def action_cycle_notation(self) -> None:
         """Switch how notes are spelled. Never changes what was detected."""

@@ -15,6 +15,7 @@ import threading
 
 import numpy as np
 
+from .pitch import midi_to_hz
 from .segment import Note
 
 SAMPLE_RATE = 44100
@@ -29,6 +30,7 @@ def render(
     *,
     amplitude: float = 0.32,
     speed: float = 1.0,
+    voice: str = "pure",
 ) -> np.ndarray:
     """Render notes into a mono waveform, preserving their original timing.
 
@@ -52,8 +54,14 @@ def render(
     total = max(n.end for n in notes) + TAIL
     buffer = np.zeros(int(total * sample_rate) + 1, dtype=np.float32)
 
+    stacks = chord_offsets(notes, voice)
     for note in notes:
         wave = _voice(note.ideal_freq, note.duration, sample_rate) * amplitude
+        for offset in stacks.get(note.midi, ()):
+            # Quieter than the melody, so the tune stays the thing you hear.
+            wave = wave + _voice(
+                midi_to_hz(note.midi + offset), note.duration, sample_rate
+            ) * (amplitude * 0.45)
         start = int(note.start * sample_rate)
         end = min(start + wave.size, buffer.size)
         buffer[start:end] += wave[: end - start]
@@ -109,6 +117,54 @@ def resample(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
     return np.interp(target, source, audio).astype(np.float32)
 
 
+VOICES = ("pure", "rich", "chord")
+VOICE_LABELS = {
+    "pure": "Pure",
+    "rich": "Rich",
+    "chord": "Chords",
+}
+VOICE_NOTES = {
+    "pure": "one tone per note",
+    "rich": "with its octave and fifth — always consonant",
+    "chord": "a triad from the melody's own notes",
+}
+
+
+def next_voice(voice: str) -> str:
+    return VOICES[(VOICES.index(voice) + 1) % len(VOICES)] if voice in VOICES else VOICES[0]
+
+
+def chord_offsets(notes: list[Note], voice: str) -> dict[int, tuple[int, ...]]:
+    """What to stack on each note, in semitones above it.
+
+    "Rich" adds the fifth and the octave, which are consonant against any
+    root and so cannot be wrong. "Chords" adds a third as well, and picks
+    major or minor by looking at which one the melody actually uses -- a
+    third borrowed from the tune itself belongs with it, where a fixed major
+    third would fight a minor melody.
+    """
+    if voice == "pure" or not notes:
+        return {}
+    if voice == "rich":
+        return {n.midi: (7, 12) for n in notes}
+
+    present = {n.midi % 12 for n in notes}
+    stacks: dict[int, tuple[int, ...]] = {}
+    for note in notes:
+        root = note.midi % 12
+        major = (root + 4) % 12 in present
+        minor = (root + 3) % 12 in present
+        if minor and not major:
+            third = 3
+        elif major and not minor:
+            third = 4
+        else:
+            # Neither or both are in the tune; major is the safer default.
+            third = 4
+        stacks[note.midi] = (third, 7)
+    return stacks
+
+
 TEMPO_MIN = 1
 TEMPO_MAX = 9
 TEMPO_DEFAULT = 5
@@ -150,6 +206,7 @@ def mix_hum_with_tones(
     balance: int | None = None,
     hum_gain: float = 0.85,
     tone_gain: float = 0.45,
+    voice: str = "pure",
 ) -> np.ndarray:
     """Your recording and the transcription playing together.
 
@@ -160,13 +217,14 @@ def mix_hum_with_tones(
     if balance is not None:
         hum_gain, tone_gain = mix_gains(balance)
 
-    voice = resample(hum, hum_rate, rate) * hum_gain
+    # Not named `voice`: that is the timbre setting, and the two would collide.
+    singing = resample(hum, hum_rate, rate) * hum_gain
     # render() already applies its own amplitude, so scale relative to that.
-    tones = render(notes, rate) * (tone_gain / 0.32 if notes else 1.0)
+    tones = render(notes, rate, voice=voice) * (tone_gain / 0.32 if notes else 1.0)
 
-    length = max(voice.size, tones.size)
+    length = max(singing.size, tones.size)
     out = np.zeros(length, dtype=np.float32)
-    out[: voice.size] += voice
+    out[: singing.size] += singing
     out[: tones.size] += tones
 
     peak = float(np.max(np.abs(out))) if out.size else 0.0
@@ -236,11 +294,14 @@ class Player:
         played = self._cursor - self._latency_frames
         return max(0.0, played / self.sample_rate)
 
-    def play(self, notes: list[Note], speed: float = 1.0) -> None:
+    def play(
+        self, notes: list[Note], speed: float = 1.0, voice: str = "pure"
+    ) -> None:
         """Start playing the transcription. Restarts cleanly if already playing."""
         rate = self._requested_rate or device_sample_rate()
         self.speed = speed
-        self.play_audio(render(notes, rate, speed=speed), rate)
+        self.voice = voice
+        self.play_audio(render(notes, rate, speed=speed, voice=voice), rate)
 
     def play_audio(self, buffer: np.ndarray, rate: int | None = None) -> None:
         """Start playing an arbitrary mono buffer."""

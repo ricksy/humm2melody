@@ -235,3 +235,82 @@ def test_overlay_never_clips_at_any_balance():
     for level in range(1, 10):
         mixed = mix_hum_with_tones(hum, SR, notes, SR, balance=level)
         assert np.max(np.abs(mixed)) <= 1.0
+
+
+# -- voices ----------------------------------------------------------------
+
+
+def test_pure_stacks_nothing():
+    from humm2melody.playback import chord_offsets
+
+    assert chord_offsets([note(60, 0, 0.4)], "pure") == {}
+
+
+def test_rich_adds_the_fifth_and_octave():
+    """Consonant against any root, so it cannot be wrong in any key."""
+    from humm2melody.playback import chord_offsets
+
+    assert chord_offsets([note(60, 0, 0.4)], "rich")[60] == (7, 12)
+
+
+def test_chords_take_a_minor_third_from_a_minor_melody():
+    from humm2melody.playback import chord_offsets
+
+    melody = [note(60, 0, 0.3), note(63, 0.4, 0.7), note(67, 0.8, 1.1)]
+    assert chord_offsets(melody, "chord")[60] == (3, 7)
+
+
+def test_chords_take_a_major_third_from_a_major_melody():
+    from humm2melody.playback import chord_offsets
+
+    melody = [note(60, 0, 0.3), note(64, 0.4, 0.7), note(67, 0.8, 1.1)]
+    assert chord_offsets(melody, "chord")[60] == (4, 7)
+
+
+def test_chords_fall_back_to_major_when_the_melody_says_nothing():
+    from humm2melody.playback import chord_offsets
+
+    assert chord_offsets([note(60, 0, 0.4)], "chord")[60] == (4, 7)
+
+
+def test_a_richer_voice_makes_a_fuller_sound():
+    """More partials means more energy above the fundamental."""
+    from humm2melody.playback import render
+
+    melody = [note(60, 0.0, 0.6)]
+    energy = {}
+    for voice in ("pure", "rich", "chord"):
+        audio = render(melody, SR, voice=voice)
+        spectrum = np.abs(np.fft.rfft(audio[: 2**14]))
+        freqs = np.fft.rfftfreq(2**14, 1 / SR)
+        energy[voice] = spectrum[(freqs > 350) & (freqs < 900)].sum()
+    assert energy["rich"] > energy["pure"]
+    assert energy["chord"] > energy["pure"]
+
+
+def test_every_voice_renders_and_stays_in_range():
+    from humm2melody.playback import VOICES, render
+
+    melody = [note(60 + i, i * 0.3, i * 0.3 + 0.25) for i in range(5)]
+    for voice in VOICES:
+        audio = render(melody, SR, voice=voice)
+        assert audio.size > 0
+        assert np.max(np.abs(audio)) <= 1.0
+
+
+def test_the_voice_cycle_returns_to_the_start():
+    from humm2melody.playback import VOICES, next_voice
+
+    seen, voice = [], "pure"
+    for _ in range(len(VOICES)):
+        seen.append(voice)
+        voice = next_voice(voice)
+    assert seen == list(VOICES)
+    assert voice == "pure"
+
+
+def test_an_unknown_voice_is_survivable():
+    from humm2melody.playback import next_voice, render
+
+    assert next_voice("nonsense") == "pure"
+    assert render([note(60, 0, 0.4)], SR, voice="nonsense").size > 0

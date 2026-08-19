@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (435 tests, no microphone required). But treat it
+> It works, and it is tested (454 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
@@ -435,6 +435,29 @@ Under the timeline is a piano keyboard spanning the same width, which lights up
 as the melody plays and shows the note you are editing. A piano roll tells you
 the shape of a tune; this tells you where your hands go, which is the point of
 the app. Keys are named inside, in whichever notation you have chosen.
+
+### Composing on it
+
+The keys are clickable. Click one and that note is added to the melody, played
+so you can hear it, and selected so the usual editing keys apply — so a tune can
+be built entirely by clicking, with `z` to undo a wrong key.
+
+Black keys are only hit in the upper rows where they are drawn; below that the
+white key underneath takes the click, as on a real keyboard.
+
+## How full it sounds
+
+`v` switches the voice:
+
+| Voice | What plays |
+| --- | --- |
+| **Pure** | one tone per note |
+| **Rich** | its octave and fifth as well — consonant against any root |
+| **Chords** | a triad, with the third taken from the melody itself |
+
+The chord voice picks major or minor by looking at which third the melody
+actually uses, rather than assuming major. A third borrowed from the tune
+belongs with it; a fixed major third fights a minor melody.
 
 ## Playing it slower
 
