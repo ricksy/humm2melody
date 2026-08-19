@@ -88,9 +88,11 @@ class FakePlayer:
         self.played: list[Note] | None = None
         self.buffer = None
         self.sample_rate = SR
+        self.speed = 1.0
 
-    def play(self, notes):
+    def play(self, notes, speed=1.0):
         self.played = list(notes)
+        self.speed = speed
         self.playing = True
         self.position = 0.0
 
@@ -118,6 +120,19 @@ def make_app(tmp_path: Path, save: bool = True, profile=None, **kwargs):
     return app
 
 
+async def click_button(app, pilot, selector: str) -> None:
+    """Click a button, scrolling it into view first.
+
+    The controls sit inside the scrolling results pane, so on a short screen
+    they can be below the fold -- which a real user also has to scroll to.
+    """
+    button = app.query_one(selector)
+    app.query_one("#results").scroll_to_widget(button, animate=False)
+    await pilot.pause()
+    await pilot.click(button)
+    await pilot.pause()
+
+
 async def record_once(pilot) -> None:
     """Start and stop a recording, letting the UI settle."""
     await pilot.press("space")
@@ -137,16 +152,16 @@ async def test_starts_empty_with_playback_disabled(tmp_path: Path):
 
 async def test_button_toggles_label_while_recording(tmp_path: Path):
     app = make_app(tmp_path)
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(120, 70)) as pilot:
         toggle = app.query_one("#toggle", Button)
-        await pilot.click("#toggle")
+        await click_button(app, pilot, "#toggle")
         assert app.recorder.running is True
         assert "Stop" in str(toggle.label)
 
         # Button ignores clicks while its "-active" press animation runs, so
         # wait that out before clicking again.
         await asyncio.sleep(toggle.active_effect_duration + 0.05)
-        await pilot.click("#toggle")
+        await click_button(app, pilot, "#toggle")
         assert app.recorder.running is False
         assert "Start" in str(toggle.label)
 
@@ -175,8 +190,8 @@ async def test_timeline_and_sequence_render_after_stopping(tmp_path: Path):
 
 async def test_microphone_failure_is_reported_not_raised(tmp_path: Path):
     app = make_app(tmp_path, fail=True)
-    async with app.run_test() as pilot:
-        await pilot.click("#toggle")
+    async with app.run_test(size=(120, 70)) as pilot:
+        await click_button(app, pilot, "#toggle")
 
         hint = str(app.query_one("#hint", Static).content)
         assert "microphone" in hint.lower()
@@ -2019,3 +2034,201 @@ async def test_pending_edits_survive_loading_another_run(tmp_path: Path):
 
         saved = next(r for r in app.store.list() if r.path == edited)
         assert saved.notes[0].midi == expected
+
+
+# -- the piano keyboard ----------------------------------------------------
+
+
+async def test_the_keyboard_covers_the_melody_in_whole_octaves(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(120, 70)) as pilot:
+        await record_once(pilot)
+        piano = app.query_one("#piano", PianoKeys)
+        assert piano._low % 12 == 0
+        assert piano._high % 12 == 11
+        assert piano._low <= min(n.midi for n in app.notes)
+        assert piano._high >= max(n.midi for n in app.notes)
+
+
+async def test_the_keyboard_draws_white_and_black_keys(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(120, 70)) as pilot:
+        await record_once(pilot)
+        drawn = str(app.query_one("#piano", PianoKeys).content)
+        assert "│" in drawn      # white key separators
+        assert "█" in drawn      # black keys
+        assert "C4" in drawn     # keys are named inside
+
+
+async def test_the_keyboard_lights_the_sounding_notes(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(120, 70)) as pilot:
+        await record_once(pilot)
+        await pilot.press("p")
+
+        target = app.notes[1]
+        app.player.position = (target.start + target.end) / 2
+        app._tick_playback()
+        assert app.query_one("#piano", PianoKeys)._lit == {target.midi}
+
+
+async def test_the_keyboard_clears_when_playback_stops(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(120, 70)) as pilot:
+        await record_once(pilot)
+        await pilot.press("p")
+        app.player.position = app.notes[0].start + 0.01
+        app._tick_playback()
+        assert app.query_one("#piano", PianoKeys)._lit
+
+        await pilot.press("p")
+        await pilot.pause()
+        assert app.query_one("#piano", PianoKeys)._lit == set()
+
+
+async def test_the_keyboard_shows_the_note_being_edited(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(120, 70)) as pilot:
+        await record_once(pilot)
+        await pilot.press("e")
+        await pilot.press("right")
+        await pilot.pause()
+        assert app.query_one("#piano", PianoKeys)._lit == {app.notes[1].midi}
+
+
+async def test_the_keyboard_follows_the_notation_scheme(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(120, 70)) as pilot:
+        await record_once(pilot)
+        await pilot.press("n")
+        await pilot.press("n")  # solfège
+        await pilot.pause()
+        # Narrow keys drop the octave number rather than overflow the key.
+        assert "Do" in str(app.query_one("#piano", PianoKeys).content)
+
+
+async def test_the_keyboard_is_as_wide_as_the_timeline(tmp_path: Path):
+    from humm2melody.tui import PianoKeys, PianoRoll
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(120, 70)) as pilot:
+        await record_once(pilot)
+        roll = app.query_one("#roll", PianoRoll)
+        piano = app.query_one("#piano", PianoKeys)
+        assert piano.region.width == roll.region.width
+
+
+async def test_the_keyboard_keys_are_tall_and_outlined(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(120, 70)) as pilot:
+        await record_once(pilot)
+        piano = app.query_one("#piano", PianoKeys)
+        lines = str(piano.content).splitlines()
+        assert len(lines) >= PianoKeys.BLACK_ROWS + PianoKeys.WHITE_ROWS
+        assert all("│" in line for line in lines[: PianoKeys.BLACK_ROWS])
+        assert "┴" in lines[PianoKeys.BLACK_ROWS + PianoKeys.WHITE_ROWS]
+
+
+# -- the second footer and the keys panel ----------------------------------
+
+
+async def test_the_live_panel_is_a_footer_on_every_tab(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test(size=(120, 70)) as pilot:
+        await pilot.pause()
+        live = app.query_one("#live")
+        footer_top = app.query_one("#live").region.y
+        assert footer_top > app.query_one(TabbedContent).region.y
+
+        await goto_calibrate(app, pilot)
+        assert live.display  # still visible away from the Recording tab
+
+
+async def test_escape_closes_the_keys_panel(tmp_path: Path):
+    from textual.widgets import HelpPanel
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(120, 70)) as pilot:
+        await pilot.pause()
+        app.action_show_help_panel()
+        await pilot.pause()
+        assert app.screen.query(HelpPanel)
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not app.screen.query(HelpPanel)
+
+
+async def test_q_closes_the_keys_panel_before_quitting(tmp_path: Path):
+    from textual.widgets import HelpPanel
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(120, 70)) as pilot:
+        await pilot.pause()
+        app.action_show_help_panel()
+        await pilot.pause()
+
+        await pilot.press("q")
+        await pilot.pause()
+        assert not app.screen.query(HelpPanel)
+        assert app.is_running  # closed the panel, did not quit
+
+
+async def test_the_playhead_sweeps_the_whole_timeline_at_any_tempo(tmp_path: Path):
+    """Position is in played seconds; the timeline is in the notes' seconds."""
+    app = make_app(tmp_path)
+    async with app.run_test(size=(120, 70)) as pilot:
+        await record_once(pilot)
+        span = max(n.end for n in app.notes)
+
+        for _ in range(4):  # tempo 5 -> 9, i.e. 2x
+            await pilot.press("greater_than_sign")
+        await pilot.press("p")
+        await pilot.pause()
+
+        # Playing 2x means the audio ends at half the score duration.
+        app.player.position = span / 2
+        app._tick_playback()
+        roll = app.query_one("#roll", PianoRoll)
+        assert roll._playhead == pytest.approx(span, abs=0.01)
+
+
+async def test_tempo_reaches_the_player(tmp_path: Path):
+    app = make_app(tmp_path)
+    async with app.run_test(size=(120, 70)) as pilot:
+        await record_once(pilot)
+        for _ in range(4):
+            await pilot.press("less_than_sign")
+        await pilot.press("p")
+        await pilot.pause()
+        assert app.player.speed == pytest.approx(0.50)
+
+
+async def test_the_notes_lit_follow_the_tempo(tmp_path: Path):
+    from humm2melody.tui import PianoKeys
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(120, 70)) as pilot:
+        await record_once(pilot)
+        for _ in range(4):
+            await pilot.press("greater_than_sign")
+        await pilot.press("p")
+
+        target = app.notes[1]
+        app.player.position = ((target.start + target.end) / 2) / 2.0
+        app._tick_playback()
+        assert app.query_one("#piano", PianoKeys)._lit == {target.midi}

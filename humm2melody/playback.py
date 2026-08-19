@@ -28,10 +28,26 @@ def render(
     sample_rate: int = SAMPLE_RATE,
     *,
     amplitude: float = 0.32,
+    speed: float = 1.0,
 ) -> np.ndarray:
-    """Render notes into a mono waveform, preserving their original timing."""
+    """Render notes into a mono waveform, preserving their original timing.
+
+    ``speed`` scales time only. Pitch is regenerated from each note rather
+    than resampled, so playing at half speed lowers nothing -- which is the
+    point of being able to slow a melody down to learn it.
+    """
     if not notes:
         return np.zeros(0, dtype=np.float32)
+
+    if speed != 1.0:
+        notes = [
+            Note(
+                midi=n.midi, start=n.start / speed, end=n.end / speed,
+                freq=n.freq, confidence=n.confidence, pitch=n.pitch,
+                attack=n.attack,
+            )
+            for n in notes
+        ]
 
     total = max(n.end for n in notes) + TAIL
     buffer = np.zeros(int(total * sample_rate) + 1, dtype=np.float32)
@@ -91,6 +107,19 @@ def resample(audio: np.ndarray, src_rate: int, dst_rate: int) -> np.ndarray:
     source = np.linspace(0.0, 1.0, audio.size, endpoint=False)
     target = np.linspace(0.0, 1.0, count, endpoint=False)
     return np.interp(target, source, audio).astype(np.float32)
+
+
+TEMPO_MIN = 1
+TEMPO_MAX = 9
+TEMPO_DEFAULT = 5
+
+TEMPO_SPEEDS = (0.50, 0.62, 0.75, 0.87, 1.00, 1.20, 1.45, 1.70, 2.00)
+"""Playback speeds for tempo levels 1..9. Level 5 is the recorded tempo."""
+
+
+def tempo_speed(level: int) -> float:
+    level = max(TEMPO_MIN, min(TEMPO_MAX, int(level)))
+    return TEMPO_SPEEDS[level - TEMPO_MIN]
 
 
 MIX_MIN = 1
@@ -207,10 +236,11 @@ class Player:
         played = self._cursor - self._latency_frames
         return max(0.0, played / self.sample_rate)
 
-    def play(self, notes: list[Note]) -> None:
+    def play(self, notes: list[Note], speed: float = 1.0) -> None:
         """Start playing the transcription. Restarts cleanly if already playing."""
         rate = self._requested_rate or device_sample_rate()
-        self.play_audio(render(notes, rate), rate)
+        self.speed = speed
+        self.play_audio(render(notes, rate, speed=speed), rate)
 
     def play_audio(self, buffer: np.ndarray, rate: int | None = None) -> None:
         """Start playing an arbitrary mono buffer."""

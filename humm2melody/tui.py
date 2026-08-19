@@ -30,7 +30,17 @@ from .calibration import STEPS as CALIBRATION_STEPS
 from .calibration import GLOBAL_FMAX, GLOBAL_FMIN, calibrate, voice_bounds
 from .pitch import NOTE_NAMES, hz_to_midi, midi_to_hz
 from .naming import SCHEMES, get_scheme, next_scheme, spell
-from .playback import MIX_DEFAULT, MIX_MAX, MIX_MIN, Player, mix_hum_with_tones
+from .playback import (
+    MIX_DEFAULT,
+    MIX_MAX,
+    MIX_MIN,
+    TEMPO_DEFAULT,
+    TEMPO_MAX,
+    TEMPO_MIN,
+    Player,
+    mix_hum_with_tones,
+    tempo_speed,
+)
 from .profiles import DEFAULT_PROFILE_DIR, Profile, ProfileStore, guest
 from .pitch import PitchFrame
 from .segment import (
@@ -147,6 +157,23 @@ class MixDial(Dial):
                 "mostly your hum, tones underneath",
                 "balanced — favours your voice",
                 "mostly tones, hum underneath",
+            ),
+        )
+
+
+class TempoDial(Dial):
+    """How fast the transcription plays back."""
+
+    def show(self, level: int) -> None:
+        speed = tempo_speed(level)
+        self.render_dial(
+            "Tempo",
+            "< >",
+            level,
+            (
+                f"slower — {speed:.2f}×, for learning it",
+                "as recorded",
+                f"faster — {speed:.2f}×",
             ),
         )
 
@@ -997,6 +1024,160 @@ class ProfileScreen(ModalScreen[Profile]):
         )
 
 
+WHITE_STEPS = (0, 2, 4, 5, 7, 9, 11)
+"""Semitone offsets of the white keys within an octave."""
+
+BLACK_AFTER = {0: 1, 1: 3, 3: 6, 4: 8, 5: 10}
+"""White-key index within an octave -> the black key sitting to its right."""
+
+
+class PianoKeys(Static):
+    """A keyboard that lights up as the melody plays.
+
+    A piano roll tells you the shape of a tune; it does not tell you where
+    your hands go. This does, which is the whole point of the app.
+    """
+
+    BLACK_ROWS = 5
+    WHITE_ROWS = 5
+    MIN_KEY_WIDTH = 3
+    MAX_KEY_WIDTH = 5
+    """Capped so keys stay slim; the range widens instead of the keys fattening."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._low = 60
+        self._high = 71
+        self._lit: set[int] = set()
+        self._scheme = "english"
+
+    def set_range(self, notes: list[Note], scheme: str = "english") -> None:
+        """Cover the melody, rounded outwards to whole octaves."""
+        self._scheme = scheme
+        if notes:
+            low = min(n.midi for n in notes)
+            high = max(n.midi for n in notes)
+        else:
+            low, high = 60, 71
+        self._low = (low // 12) * 12
+        self._high = (high // 12) * 12 + 11
+        self._lit = set()
+        self.refresh_keys()
+
+    def light(self, midis) -> None:
+        lit = set(midis)
+        if lit != self._lit:
+            self._lit = lit
+            self.refresh_keys()
+
+    def on_resize(self) -> None:
+        self.refresh_keys()
+
+    def _white_keys(self) -> list[int]:
+        return [
+            midi
+            for midi in range(self._low, self._high + 1)
+            if midi % 12 in WHITE_STEPS
+        ]
+
+    def refresh_keys(self) -> None:
+        whites = self._white_keys()
+        available = max(8, self.size.width - 2)  # the widget's own border
+        if not whites:
+            self.update(Text(""))
+            return
+
+        # Slim keys, and the octave range widened until they fill the width --
+        # rather than a handful of fat keys stretched across the timeline.
+        width = min(self.MAX_KEY_WIDTH, max(self.MIN_KEY_WIDTH, available // len(whites)))
+        while len(whites) * width + 1 + width * 7 <= available and self._high - self._low < 60:
+            self._low = max(0, self._low - 12)
+            self._high = min(127, self._high + 12)
+            grown = self._white_keys()
+            if len(grown) == len(whites):
+                break
+            whites = grown
+        span = len(whites) * width + 1
+
+        # Classify every column once, then draw rows from it.
+        owner: list[int | None] = [None] * span
+        black: list[int | None] = [None] * span
+        edge = [False] * span
+
+        for index, midi in enumerate(whites):
+            left = index * width
+            edge[left] = True
+            for column in range(left + 1, left + width):
+                owner[column] = midi
+        edge[span - 1] = True
+
+        for index, midi in enumerate(whites[:-1]):
+            sharp = BLACK_AFTER.get(WHITE_STEPS.index(midi % 12))
+            if sharp is None:
+                continue
+            note = midi - (midi % 12) + sharp
+            centre = (index + 1) * width
+            # Narrower than a white key, or neighbouring black keys touch and
+            # the top of the keyboard reads as one solid slab.
+            thickness = max(1, width // 2)
+            left = centre - thickness // 2
+            for column in range(max(1, left), min(span - 1, left + thickness)):
+                black[column] = note
+
+        # Names sit inside the keys, one row up from the bottom, centred.
+        label_row = self.BLACK_ROWS + self.WHITE_ROWS - 2
+        room = width - 1
+        labels_by_key = {}
+        owner_start = {}
+        for index, midi in enumerate(whites):
+            owner_start[midi] = index * width
+            name = self._label_for(midi, room)
+            pad = (room - len(name)) // 2
+            labels_by_key[midi] = " " * pad + name
+
+        out = Text()
+        for row in range(self.BLACK_ROWS + self.WHITE_ROWS):
+            in_black_region = row < self.BLACK_ROWS
+            for column in range(span):
+                note = black[column]
+                if in_black_region and note is not None:
+                    out.append("█", style=HIGHLIGHT if note in self._lit else "grey27")
+                elif edge[column]:
+                    out.append("│", style="grey42")
+                else:
+                    key = owner[column]
+                    glyph, style = " ", ""
+                    if key is not None and row == label_row:
+                        offset = column - (owner_start[key] + 1)
+                        label = labels_by_key.get(key, "")
+                        if 0 <= offset < len(label):
+                            glyph = label[offset]
+                            style = "black" if key in self._lit else "grey62"
+                    elif key is not None and key in self._lit:
+                        glyph, style = "█", HIGHLIGHT
+                    if key is not None and key in self._lit and glyph != "█":
+                        out.append(glyph, style=f"bold black on {HIGHLIGHT}")
+                    else:
+                        out.append(glyph, style=style)
+            out.append("\n")
+
+        # A closing edge under the keys, so each reads as a key rather than a
+        # bare line.
+        for column in range(span):
+            out.append("┴" if edge[column] else "─", style="grey42")
+        self.update(out)
+
+    def _label_for(self, midi: int, room: int) -> str:
+        """The longest name that fits inside a key of this width."""
+        full = spell(midi, self._scheme)
+        if len(full) <= room:
+            return full
+        bare = full.rstrip("-0123456789")
+        if len(bare) <= room:
+            return bare
+        return bare[:room]
+
+
 class DetailTable(Static):
     """The per-note table, with clickable rows."""
 
@@ -1026,38 +1207,44 @@ class Humm2MelodyApp(App):
     SUB_TITLE = "hum a melody, get the keyboard notes"
 
     CSS = """
-    Screen { layout: vertical; }
+    Screen {
+        layout: vertical;
+        border: round $primary 40%;
+    }
 
     #live {
+        dock: bottom;
         height: auto;
-        border: round $primary 50%;
-        padding: 1 2;
-        margin: 1 2 0 2;
+        border-top: solid $primary 40%;
+        padding: 0 2;
     }
-    #live.recording { border: round #f87171; }
+    #live.recording { border-top: solid #f87171; }
+
+    #piano {
+        width: 1fr;
+        height: auto;
+        border: round $primary 40%;
+        margin-bottom: 1;
+    }
 
     NoteReadout { height: 1; }
     LevelMeter { height: 1; margin-top: 1; }
     #hint { height: 1; margin-top: 1; color: $text-muted; }
 
-    #controls {
-        height: auto;
-        align: center middle;
-        margin: 1 2 0 2;
-    }
-    #toggle { min-width: 24; margin-right: 2; }
-    #play { min-width: 22; }
+    #notes-row { height: auto; }
+    #detail { width: auto; height: auto; }
+    #controls { width: 1fr; height: auto; padding-left: 3; }
+    #controls Button { width: 18; min-width: 18; margin-right: 2; }
     #sensitivity { height: 1; margin: 1 2 0 2; }
     #pause { height: 1; margin: 0 2 0 2; }
     #mix { height: 1; margin: 0 2 0 2; }
+    #tempo { height: 1; margin: 0 2 0 2; }
     #notation { height: 1; margin: 0 2 0 2; }
-    #compare { min-width: 26; margin-left: 2; }
 
     #main { height: 1fr; margin: 1 2; }
     #results { width: 1fr; }
     #roll { height: auto; margin-bottom: 1; }
     #sequence { height: auto; margin-bottom: 1; }
-    #detail { height: auto; }
 
     #sidebar {
         width: 34;
@@ -1096,12 +1283,15 @@ class Humm2MelodyApp(App):
         ("m", "cycle_source", "Compare"),
         ("l", "play_reference", "Hear melody"),
         ("y", "keep_calibration", "Keep calibration"),
+        ("less_than_sign", "slower", "Slower"),
+        ("greater_than_sign", "faster", "Faster"),
         ("n", "cycle_notation", "Notation"),
         ("e", "edit_notes", "Edit notes"),
         ("minus", "less_tones", "More hum"),
         ("equals_sign", "more_tones", "More tones"),
         ("c", "clear", "Clear"),
-        ("q", "quit", "Quit"),
+        ("q", "quit_or_close_help", "Quit"),
+        ("escape", "dismiss_help", "Close keys"),
     ]
 
     def __init__(
@@ -1133,6 +1323,7 @@ class Humm2MelodyApp(App):
         self.pause_sensitivity = PAUSE_DEFAULT
         self.source = "tones"
         self.mix = MIX_DEFAULT
+        self.tempo = TEMPO_DEFAULT
         # Calibration state: which step is next, what has been captured.
         self.cal_step: int | None = None
         self.cal_takes: dict[str, str] = {}
@@ -1160,29 +1351,29 @@ class Humm2MelodyApp(App):
         yield Header()
         with TabbedContent(initial=DEFAULT_TAB):
             with TabPane("Recording", id="tab-record"):
-                with Vertical(id="live"):
-                    yield NoteReadout(id="readout")
-                    yield LevelMeter(id="meter")
-                    yield Static(
-                        "Press Start (or space) and hum your melody.", id="hint"
-                    )
-                with Horizontal(id="controls"):
-                    yield ActionButton(
-                        "▶  Start humming", variant="success", id="toggle"
-                    )
-                    yield ActionButton(
-                        "♪  Play back", variant="primary", id="play", disabled=True
-                    )
-                    yield ActionButton("◑  Tones only", id="compare")
                 yield SensitivityDial(id="sensitivity")
                 yield PauseDial(id="pause")
                 yield MixDial(id="mix")
+                yield TempoDial(id="tempo")
                 yield NotationRow(id="notation")
                 with Horizontal(id="main"):
                     with VerticalScroll(id="results"):
                         yield PianoRoll(id="roll")
                         yield MelodySequence(id="sequence")
-                        yield DetailTable(id="detail")
+                        yield PianoKeys(id="piano")
+                        # Beside the table rather than above everything: the
+                        # app should fit on a screen without scrolling.
+                        with Horizontal(id="notes-row"):
+                            yield DetailTable(id="detail")
+                            with Horizontal(id="controls"):
+                                yield ActionButton(
+                                    "▶  Start humming", variant="success", id="toggle"
+                                )
+                                yield ActionButton(
+                                    "♪  Play back", variant="primary",
+                                    id="play", disabled=True,
+                                )
+                                yield ActionButton("◑  Tones only", id="compare")
                     with Vertical(id="sidebar"):
                         yield Static("Recordings", id="sidebar-title")
                         yield Static(id="sidebar-path")
@@ -1194,6 +1385,13 @@ class Humm2MelodyApp(App):
 
             with TabPane("Training", id="tab-train"):
                 yield Static(_placeholder_training(), id="train-body")
+
+        # A second footer: what the app is hearing and what to do next, kept
+        # visible on every tab rather than only while recording.
+        with Vertical(id="live"):
+            yield NoteReadout(id="readout")
+            yield LevelMeter(id="meter")
+            yield Static("Press Start (or space) and hum your melody.", id="hint")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -1202,6 +1400,7 @@ class Humm2MelodyApp(App):
         self.query_one("#sensitivity", SensitivityDial).show(self.sensitivity)
         self.query_one("#pause", PauseDial).show(self.pause_sensitivity)
         self.query_one("#mix", MixDial).show(self.mix)
+        self.query_one("#tempo", TempoDial).show(self.tempo)
         self.query_one("#notation", NotationRow).show(self.notation)
         self._apply_profile(self.profile)
         self._refresh_calibration()
@@ -1363,7 +1562,10 @@ class Humm2MelodyApp(App):
 
         try:
             if self.source == "tones" or self.audio is None:
-                self.player.play(self.notes)
+                # Tempo applies to the tones only. Speeding your own recording
+                # up would need time-stretching, and simply resampling it would
+                # transpose the very pitches being checked.
+                self.player.play(self.notes, speed=tempo_speed(self.tempo))
             elif self.source == "hum":
                 self.player.play_audio(self.audio, self.audio_rate)
             else:
@@ -1393,7 +1595,10 @@ class Humm2MelodyApp(App):
             self._stop_playback()
             return
 
-        position = self.player.position
+        # The player reports seconds of audio played, but the timeline is drawn
+        # in the notes' own seconds. At 2x the audio is half as long, so without
+        # this the playhead stopped halfway across.
+        position = self.player.position * getattr(self.player, "speed", 1.0)
         roll = self._find("#roll", PianoRoll)
         if roll is None:  # the tree is being torn down; nothing left to draw
             return
@@ -1407,6 +1612,9 @@ class Humm2MelodyApp(App):
         sequence = self._find("#sequence", MelodySequence)
         if sequence is not None:
             sequence.set_active(active)
+        piano = self._find("#piano", PianoKeys)
+        if piano is not None:
+            piano.light(self._sounding_at(position))
 
     def _stop_playback(self) -> None:
         if self._play_timer is not None:
@@ -1425,6 +1633,9 @@ class Humm2MelodyApp(App):
         sequence = self._find("#sequence", MelodySequence)
         if sequence is not None:
             sequence.set_active(None)
+        piano = self._find("#piano", PianoKeys)
+        if piano is not None:
+            piano.light(())
 
     # -- saved runs --------------------------------------------------------
 
@@ -1938,6 +2149,7 @@ class Humm2MelodyApp(App):
         self.sensitivity = profile.pitch_sensitivity
         self.pause_sensitivity = profile.pause_sensitivity
         self.mix = profile.mix
+        self.tempo = profile.tempo
         self.notation = profile.notation
         self._apply_calibrated_detection(profile)
         self.sub_title = f"{profile.name} · hum a melody, get the keyboard notes"
@@ -1946,6 +2158,7 @@ class Humm2MelodyApp(App):
             ("#sensitivity", SensitivityDial, self.sensitivity),
             ("#pause", PauseDial, self.pause_sensitivity),
             ("#mix", MixDial, self.mix),
+            ("#tempo", TempoDial, self.tempo),
             ("#notation", NotationRow, self.notation),
         ):
             dial = self._find(selector, kind)
@@ -2026,6 +2239,7 @@ class Humm2MelodyApp(App):
         self.profile.pitch_sensitivity = self.sensitivity
         self.profile.pause_sensitivity = self.pause_sensitivity
         self.profile.mix = self.mix
+        self.profile.tempo = self.tempo
         self.profile.notation = self.notation
         try:
             self.profiles.save(self.profile)
@@ -2099,6 +2313,23 @@ class Humm2MelodyApp(App):
 
     # -- misc --------------------------------------------------------------
 
+    def _help_panel_showing(self) -> bool:
+        from textual.widgets import HelpPanel
+
+        return bool(self.screen.query(HelpPanel))
+
+    def action_dismiss_help(self) -> None:
+        """Close the keys panel. It has no other way out."""
+        if self._help_panel_showing():
+            self.action_hide_help_panel()
+
+    def action_quit_or_close_help(self) -> None:
+        """q closes the keys panel if it is open, and otherwise quits."""
+        if self._help_panel_showing():
+            self.action_hide_help_panel()
+            return
+        self.exit()
+
     def action_clear(self) -> None:
         """Clear the display. Saved runs on disk are left alone."""
         if self._active_tab() == "tab-calibrate":
@@ -2112,8 +2343,16 @@ class Humm2MelodyApp(App):
         self.query_one("#readout", NoteReadout).idle("Ready.")
         self._set_hint("Press Start (or space) and hum your melody.")
 
+    def _sounding_at(self, position: float) -> set[int]:
+        return {n.midi for n in self.notes if n.start <= position < n.end}
+
     def _show_notes(self, notes: list[Note]) -> None:
         chosen = self.selected_note if self.editing else None
+        piano = self._find("#piano", PianoKeys)
+        if piano is not None:
+            piano.set_range(notes, self.notation)
+            if chosen is not None and 0 <= chosen < len(notes):
+                piano.light({notes[chosen].midi})
         self.query_one("#roll", PianoRoll).show(notes, chosen, self.notation)
         self.query_one("#sequence", MelodySequence).show(notes, chosen, self.notation)
         self.query_one("#play", Button).disabled = not (notes or self.audio is not None)
@@ -2178,6 +2417,30 @@ class Humm2MelodyApp(App):
             "hum": "◑  Your hum",
             "both": "◑  Hum + tones",
         }[self.source]
+
+    def action_slower(self) -> None:
+        self._set_tempo(self.tempo - 1)
+
+    def action_faster(self) -> None:
+        self._set_tempo(self.tempo + 1)
+
+    def _set_tempo(self, level: int) -> None:
+        """Change playback speed. Pitch is regenerated, so nothing transposes."""
+        level = max(TEMPO_MIN, min(TEMPO_MAX, level))
+        if level == self.tempo:
+            return
+        self.tempo = level
+        self._remember_dials()
+        dial = self._find("#tempo", TempoDial)
+        if dial is not None:
+            dial.show(level)
+        speed = tempo_speed(level)
+        if self.source == "tones":
+            self._set_hint(f"Tempo {speed:.2f}× — press p to hear it.")
+        else:
+            self._set_hint(
+                f"Tempo {speed:.2f}× — applies to the tones, not your recording."
+            )
 
     def action_less_tones(self) -> None:
         self._set_mix(self.mix - 1)

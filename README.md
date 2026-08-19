@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (421 tests, no microphone required). But treat it
+> It works, and it is tested (435 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
@@ -428,6 +428,23 @@ It is an equal-power crossfade, but deliberately not centred on equal *gain*: a
 pure tone is perceptually much louder than a breathy hum at the same amplitude,
 so the midpoint favours your voice. Both ends are pulled in slightly so neither
 source ever drops to nothing.
+
+## The keyboard
+
+Under the timeline is a piano keyboard spanning the same width, which lights up
+as the melody plays and shows the note you are editing. A piano roll tells you
+the shape of a tune; this tells you where your hands go, which is the point of
+the app. Keys are named inside, in whichever notation you have chosen.
+
+## Playing it slower
+
+`<` and `>` set playback tempo, from half speed to double. Pitch is regenerated
+from each note rather than resampled, so slowing a melody down to learn it does
+not transpose it.
+
+Tempo applies to the tones only. Speeding up your own recording would need
+time-stretching, and simply resampling it would shift the very pitches you are
+checking.
 
 ## What is not built yet
 

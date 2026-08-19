@@ -51,6 +51,7 @@ class Profile:
     pitch_sensitivity: int = 5
     pause_sensitivity: int = 5
     mix: int = 5
+    tempo: int = 5
     last_tab: str = "tab-record"
     notation: str = "english"
     calibration: Calibration = field(default_factory=Calibration)
@@ -112,6 +113,7 @@ class ProfileStore:
                 "pitch": profile.pitch_sensitivity,
                 "pause": profile.pause_sensitivity,
                 "mix": profile.mix,
+                "tempo": profile.tempo,
             },
             "last_tab": profile.last_tab,
             "notation": profile.notation,
@@ -148,6 +150,7 @@ class ProfileStore:
             pitch_sensitivity=int(dials.get("pitch", 5)),
             pause_sensitivity=int(dials.get("pause", 5)),
             mix=int(dials.get("mix", 5)),
+            tempo=int(dials.get("tempo", 5)),
             last_tab=str(data.get("last_tab") or "tab-record"),
             notation=str(data.get("notation") or "english"),
             calibration=Calibration(
