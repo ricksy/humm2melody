@@ -7,9 +7,13 @@ change — follow it top to bottom and skip what does not apply.
 ## 0. Before you start
 
 ```bash
-cd /Users/ahmedshaban/dev/humm2melody
+cd "$(git rev-parse --show-toplevel)"
 git status --short          # start clean, or know what is dirty
 ```
+
+If another agent or editor is working in this repo at the same time, stage your
+own paths explicitly instead of `git add -A`, or you will commit their
+half-finished work along with yours.
 
 ## 1. Code and tests
 
@@ -34,22 +38,22 @@ uv run pytest -q tests/test_demo.py
 Only needed if you changed the **UI, the demo melody, or the detector**.
 
 ```bash
-brew install vhs                # once
-rm -rf /tmp/h2m-demo /tmp/h2m-sessions
-vhs docs/demo.tape              # -> docs/demo.gif      (~20s, ~290 KB)
-vhs docs/sessions.tape          # -> docs/sessions.gif  (~30s, ~550 KB)
+brew install vhs                     # once
+./scripts/refresh-gifs.sh            # both, or: refresh-gifs.sh demo
 ```
 
-Then **actually look at them** before committing. Extract a few frames rather
-than trusting the recording:
+The script runs the tests first (a broken app records a broken GIF), clears the
+temporary run and profile directories so each capture starts from the same
+state, regenerates the GIFs, and builds a **contact sheet** for each — six
+frames tiled into one image, skipping the opening while the command is still
+being typed.
 
-```bash
-ffmpeg -ss 14 -i docs/demo.gif -frames:v 1 /tmp/check.png -y
-```
+Then **actually look at the contact sheets.** A capture can record a perfectly
+broken UI at a perfectly normal file size. Doing this has caught a level meter
+pegged at full, a caption clipped by the sidebar, and a mid-word text wrap.
 
-Check: the live note readout shows a note, the timeline has bars, the detail
-table has rows, the sidebar lists runs. Past captures have caught a pegged
-level meter and a mid-word text wrap this way.
+Check: a note in the live readout, bars in the timeline, rows in the detail
+table, three dials aligned, runs in the sidebar, nothing clipped.
 
 Keep both GIFs under ~1 MB. If a tape gets longer, drop `Set Framerate` to 10.
 
@@ -86,66 +90,44 @@ git push
 
 ## 5. Blog post
 
-Live at <https://mufradat.com/posts/humm2melody/>. Hugo + PaperMod, served from
-`/var/www/html`, source in `/var/www/mufradat`, git remote is **Codeberg**.
-
-### Update the text
-
-```bash
-scp mufradat:/var/www/mufradat/content/posts/humm2melody.md /tmp/post.md
-# edit /tmp/post.md
-scp /tmp/post.md mufradat:/var/www/mufradat/content/posts/humm2melody.md
-```
-
-### Update the images
+The post lives on a Hugo site. **The deployment details — host, paths, remote —
+are deliberately not in this repository**, because it is public and that is
+infrastructure. They live in `scripts/blog.env`, which is gitignored; copy
+`scripts/blog.env.example` and fill it in once.
 
 ```bash
-scp docs/demo.gif docs/sessions.gif \
-    mufradat:/var/www/mufradat/static/images/humm2melody/
+cp scripts/blog.env.example scripts/blog.env   # first time only
+./scripts/publish-blog.sh --dry-run            # show what would happen
+./scripts/publish-blog.sh --images             # push the GIFs only
+./scripts/publish-blog.sh                      # push post text and GIFs
 ```
 
-### Build and publish
+The script encodes two traps that are easy to get wrong by hand:
+
+- **It never runs `git add -A` on the server.** That working tree is usually
+  dirty with unrelated in-progress posts, and `-A` would commit somebody else's
+  work. Only the post and its image directory are ever staged.
+- **It always builds with `--destination`.** Plain `hugo` writes to `public/`,
+  which is not what is served, so the site would silently not update.
+
+Afterwards it checks the post and both images return `200`, and fails loudly if
+not. A `200` on the page with a `404` on an image means the GIFs did not reach
+the static directory.
+
+To edit the post text, fetch it into `docs/blog/` (also gitignored), edit, and
+publish:
 
 ```bash
-ssh mufradat 'cd /var/www/mufradat && hugo --destination /var/www/html'
+scp "$BLOG_HOST:$BLOG_SITE/content/posts/$BLOG_SLUG.md" docs/blog/
 ```
-
-`--destination /var/www/html` is required. Plain `hugo` writes to `public/`,
-which is **not** what is served and will just create noise in git.
-
-### Commit on the server
-
-> **Important:** the server's working tree is usually dirty with unrelated
-> in-progress work (other posts, stale `public/` output). **Never run
-> `git add -A` there**, despite what `/var/www/mufradat/README.md` says. Stage
-> only your own paths:
-
-```bash
-ssh mufradat 'cd /var/www/mufradat && \
-  git add content/posts/humm2melody.md static/images/humm2melody/ && \
-  git commit -m "Update humm2melody post" && git push'
-```
-
-### Verify it is actually live
-
-```bash
-curl -s -o /dev/null -w "%{http_code}\n" https://mufradat.com/posts/humm2melody/
-curl -s -o /dev/null -w "%{http_code}\n" https://mufradat.com/images/humm2melody/demo.gif
-```
-
-Both must be `200`. A `200` on the page but `404` on an image means the GIFs
-were not copied to `static/images/humm2melody/`.
 
 ## 6. Quick full pass
 
 ```bash
-uv run pytest -q \
-  && vhs docs/demo.tape && vhs docs/sessions.tape \
-  && git add -A && git commit -m "..." && git push \
-  && scp docs/*.gif mufradat:/var/www/mufradat/static/images/humm2melody/ \
-  && ssh mufradat 'cd /var/www/mufradat && hugo --destination /var/www/html \
-       && git add content/posts/humm2melody.md static/images/humm2melody/ \
-       && git commit -m "Update humm2melody images" && git push'
+./scripts/refresh-gifs.sh                  # tests + both GIFs + contact sheets
+# ...look at the contact sheets before going further...
+git add -A && git commit -m "..." && git push
+./scripts/publish-blog.sh --images         # GIFs to the blog, rebuild, verify
 ```
 
 ## Things that are easy to get wrong

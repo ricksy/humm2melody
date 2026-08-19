@@ -1,3 +1,7 @@
+# Deployment details are infrastructure, and this repository is public.
+scripts/blog.env
+docs/blog/
+
 # Saved runs and profiles are your data, not source.
 recordings/
 profiles/
