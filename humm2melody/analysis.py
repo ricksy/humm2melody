@@ -238,6 +238,7 @@ SWEEP_GRID = {
     "min_duration": (0.06, 0.09, 0.14),
     "smoothing": (3, 5, 9),
     "gap_tolerance": (0.05, 0.07, 0.12),
+    "max_glide_rate": (None, 2.0, 3.0, 5.0),
 }
 
 

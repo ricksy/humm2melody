@@ -31,6 +31,12 @@ def analyze_main(argv: list[str]) -> int:
     parser.add_argument("--min-duration", type=float, default=0.09)
     parser.add_argument("--smoothing", type=int, default=5)
     parser.add_argument("--gap-tolerance", type=float, default=0.07)
+    parser.add_argument(
+        "--max-glide-rate",
+        type=float,
+        default=3.0,
+        help="semitones/sec above which pitch counts as sliding; 0 disables",
+    )
     args = parser.parse_args(argv)
 
     from . import analysis
@@ -58,6 +64,7 @@ def analyze_main(argv: list[str]) -> int:
         min_duration=args.min_duration,
         smoothing=args.smoothing,
         gap_tolerance=args.gap_tolerance,
+        max_glide_rate=args.max_glide_rate or None,
     )
     print(analysis.format_report(report, expected))
     return 0

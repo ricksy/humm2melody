@@ -60,6 +60,62 @@ def _median_filter(values: np.ndarray, size: int) -> np.ndarray:
     return out
 
 
+VIBRATO_PERIOD = 0.23
+"""Measurement window for glide rate: one cycle of slowish (~4.5 Hz) vibrato."""
+
+
+def glide_mask(
+    midis: np.ndarray,
+    times: np.ndarray,
+    max_rate: float,
+    window: float = VIBRATO_PERIOD,
+) -> np.ndarray:
+    """Mark frames where pitch is sliding rather than being held.
+
+    Sung melodies are legato: the voice slides between notes instead of
+    jumping. Snapping every frame of that slide invents a note for each
+    semitone it passes through, so humming C-D-E in one breath transcribes as
+    a chromatic run.
+
+    The rate is measured across a window of at least one vibrato cycle. That
+    matters more than it looks: vibrato has a huge instantaneous slope --
+    +/-40 cents at 5 Hz swings faster than 6 semitones/sec -- so a short
+    window reads a perfectly steady note as a glide and splits it in two.
+    Over a full cycle the wobble cancels and only real drift is left.
+    """
+    count = midis.size
+    mask = np.zeros(count, dtype=bool)
+    if count == 0:
+        return mask
+
+    step = float(np.median(np.diff(times))) if count > 1 else window
+    if step <= 0:
+        return mask
+
+    # Median-filter over a vibrato cycle first. A median removes oscillation
+    # but preserves edges, so vibrato flattens while a genuine note change
+    # stays a sharp step -- which lets the slope below tell a slide (sustained)
+    # apart from a jump (one step), instead of blanking a window around both.
+    robust = _median_filter(midis, _odd(window / step))
+    span = 2
+
+    for i in range(count):
+        lo, hi = max(0, i - span), min(count - 1, i + span)
+        if np.isnan(robust[lo]) or np.isnan(robust[hi]):
+            continue
+        dt = times[hi] - times[lo]
+        if dt <= 0:
+            continue
+        mask[i] = abs(robust[hi] - robust[lo]) / dt > max_rate
+    return mask
+
+
+def _odd(value: float) -> int:
+    """Nearest odd integer >= 3, so a median window stays centred."""
+    size = max(3, int(round(value)))
+    return size if size % 2 else size + 1
+
+
 def segment_notes(
     frames: list[PitchFrame],
     *,
@@ -68,6 +124,7 @@ def segment_notes(
     min_duration: float = 0.09,
     gap_tolerance: float = 0.07,
     smoothing: int = 5,
+    max_glide_rate: float | None = 3.0,
 ) -> list[Note]:
     """Group a pitch track into notes.
 
@@ -76,6 +133,10 @@ def segment_notes(
     octave slips), ``min_duration`` drops notes too short to be intentional,
     and ``gap_tolerance`` lets a note survive a brief dropout without being
     split in two.
+
+    ``max_glide_rate`` (semitones/second, None to disable) discards frames
+    where the pitch is sliding rather than held, which is what stops a legato
+    hum from transcribing as a chromatic run.
     """
     if not frames:
         return []
@@ -91,6 +152,11 @@ def segment_notes(
     # would spread a note into the surrounding silence, inflating durations and
     # welding repeated notes together across their gap.
     smoothed[np.isnan(midis)] = np.nan
+
+    if max_glide_rate is not None:
+        # Drop the slides, keep the held pitch on either side of them.
+        smoothed[glide_mask(smoothed, times, max_glide_rate)] = np.nan
+
     snapped = np.where(np.isnan(smoothed), np.nan, np.round(smoothed))
 
     frame_step = float(np.median(np.diff(times))) if len(times) > 1 else 0.01

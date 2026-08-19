@@ -161,7 +161,22 @@ sub-sample accuracy, and `1 − cmnd(τ)` falls out as a confidence value.
 glides and the occasional slip all appear as pitch changes. So the track is
 gated by confidence and level, converted to fractional MIDI numbers, run through
 a NaN-aware 5-frame median filter (which removes single-frame octave errors),
-and rounded to the nearest semitone. Equal-pitch runs become note events; a
+and rounded to the nearest semitone.
+
+Then the glide gate: singing is *legato*, so the voice slides between notes
+rather than jumping. Snapping every frame of a slide invents a note for each
+semitone it crosses — humming C-D-E in one breath transcribes as the chromatic
+run `C4 C#4 D4 D#4 E4`. Frames where pitch is sliding faster than
+`max_glide_rate` are therefore discarded, keeping only held pitch.
+
+Getting that to work needed one non-obvious step. Vibrato has a *higher*
+instantaneous slope than a glide (±40 cents at 5 Hz swings past 6 semitones/sec),
+so measuring the slope directly splits steady notes in two. Measuring over a
+longer window fixes vibrato but then eats discrete note changes as well. The
+answer is to median-filter over a vibrato cycle first: a median removes
+oscillation but *preserves edges*, so vibrato flattens while a real note change
+stays a sharp step, and a short slope measured on top cleanly separates a
+sustained slide from an instant jump. Equal-pitch runs become note events; a
 dropout shorter than 70 ms does not split a note, and events shorter than 90 ms
 are dropped.
 
@@ -202,6 +217,7 @@ The thresholds live in the signatures of `detect_pitch` and `segment_notes`:
 | `min_duration` | `0.09` s | discard more short blips |
 | `gap_tolerance` | `0.07` s | bridge longer dropouts within one note |
 | `smoothing` | `5` frames | smooth harder (at the cost of fast passages) |
+| `max_glide_rate` | `3.0` st/s | be stricter about what counts as *held* rather than sliding (`None` disables) |
 
 ## Tests
 

@@ -199,6 +199,7 @@ def test_sweep_returns_the_parameters_that_were_used():
         "min_duration",
         "smoothing",
         "gap_tolerance",
+        "max_glide_rate",
     }
 
 

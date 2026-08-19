@@ -109,6 +109,7 @@ class Player:
         self._stream = None
         self._buffer = np.zeros(0, dtype=np.float32)
         self._cursor = 0
+        self.underruns = 0
         self._lock = threading.Lock()
 
     @property
@@ -132,8 +133,11 @@ class Player:
 
         self._buffer = buffer
         self._cursor = 0
+        self.underruns = 0
 
-        def callback(outdata, frames, _time_info, _status) -> None:
+        def callback(outdata, frames, _time_info, status) -> None:
+            if status.output_underflow:
+                self.underruns += 1
             # No lock here: a Python lock in the audio callback risks stalling
             # it behind the UI thread. A plain int read/write is atomic enough,
             # and the only reader is the playhead, where a stale frame is

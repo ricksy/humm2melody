@@ -155,3 +155,78 @@ def test_end_to_end_repeated_note_with_gap():
     ]
     notes = segment_notes(analyse(synth(spec)))
     assert [n.name for n in notes] == ["G4", "G4", "E4"]
+
+
+# -- glide gating ----------------------------------------------------------
+
+
+def legato(targets, hold=0.45, slide=0.18, vibrato=0.18, sr=SR):
+    """A sung phrase: hold a pitch, slide to the next, hold again.
+
+    This is what humming actually looks like, as opposed to the step-shaped
+    tracks the other tests use.
+    """
+    midi = []
+    for i, m in enumerate(targets):
+        midi.append(np.full(int(hold * sr), float(m)))
+        if i + 1 < len(targets):
+            midi.append(np.linspace(m, targets[i + 1], int(slide * sr)))
+    midi = np.concatenate(midi)
+    t = np.arange(midi.size) / sr
+    midi = midi + vibrato * np.sin(2 * np.pi * 5.0 * t)
+    phase = 2 * np.pi * np.cumsum(midi_to_hz(midi)) / sr
+    wave = 0.4 * (np.sin(phase) + 0.3 * np.sin(2 * phase) + 0.1 * np.sin(3 * phase))
+    return wave.astype(np.float32)
+
+
+def test_legato_hum_without_gating_invents_a_chromatic_run():
+    """The failure this exists to prevent: sliding C to E yields every semitone."""
+    notes = segment_notes(analyse(legato([60, 62, 64])), max_glide_rate=None)
+    assert [n.name for n in notes] == ["C4", "C#4", "D4", "D#4", "E4"]
+
+
+def test_legato_hum_is_transcribed_correctly_with_gating():
+    notes = segment_notes(analyse(legato([60, 62, 64])))
+    assert [n.name for n in notes] == ["C4", "D4", "E4"]
+
+
+def test_longer_legato_phrase():
+    notes = segment_notes(analyse(legato([60, 62, 64, 65, 67])))
+    assert [n.name for n in notes] == ["C4", "D4", "E4", "F4", "G4"]
+
+
+def test_legato_descending_phrase():
+    notes = segment_notes(analyse(legato([67, 65, 64, 62, 60])))
+    assert [n.name for n in notes] == ["G4", "F4", "E4", "D4", "C4"]
+
+
+def test_gating_keeps_deep_vibrato_as_one_note():
+    """Vibrato swings faster than a glide; only the median window saves it."""
+    notes = segment_notes(analyse(legato([69], hold=0.9, vibrato=0.4)))
+    assert [n.name for n in notes] == ["A4"]
+
+
+def test_gating_does_not_eat_back_to_back_discrete_notes():
+    """A step is one event, not a window: adjacent notes must survive."""
+    notes = segment_notes(
+        track([(261.6, 0.3), (293.7, 0.3), (329.6, 0.3), (349.2, 0.3)])
+    )
+    assert [n.name for n in notes] == ["C4", "D4", "E4", "F4"]
+
+
+def test_gating_leaves_well_separated_notes_alone():
+    spec: list[tuple[int | None, float]] = []
+    for midi in (60, 64, 67):
+        spec.append((midi, 0.35))
+        spec.append((None, 0.15))
+    assert [n.name for n in segment_notes(analyse(synth(spec)))] == ["C4", "E4", "G4"]
+
+
+def test_a_pure_slide_with_no_held_pitch_yields_little():
+    """If nothing is ever held, there are no notes to report."""
+    sr = SR
+    seconds = 1.6
+    t = np.arange(int(seconds * sr)) / sr
+    phase = 2 * np.pi * np.cumsum(midi_to_hz(60 + 7 * t / seconds)) / sr
+    audio = (0.45 * np.sin(phase)).astype(np.float32)
+    assert len(segment_notes(analyse(audio))) <= 2
