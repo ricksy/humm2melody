@@ -1,0 +1,10 @@
+# Saved runs are your data, not source.
+recordings/
+
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/

@@ -1,0 +1,83 @@
+"""Playback rendering tests. Pure numpy — no output device required."""
+
+from __future__ import annotations
+
+import numpy as np
+import pytest
+
+from humm2melody.playback import TAIL, render
+from humm2melody.segment import Note, segment_notes
+
+from .test_segment import SR, analyse
+
+
+def note(midi: int, start: float, end: float, freq: float | None = None) -> Note:
+    from humm2melody.pitch import midi_to_hz
+
+    return Note(
+        midi=midi,
+        start=start,
+        end=end,
+        freq=freq if freq is not None else midi_to_hz(midi),
+        confidence=0.9,
+    )
+
+
+def test_empty_melody_renders_nothing():
+    assert render([]).size == 0
+
+
+def test_render_length_covers_melody_plus_tail():
+    audio = render([note(60, 0.0, 0.5)], SR)
+    assert audio.size / SR == pytest.approx(0.5 + TAIL, abs=0.02)
+
+
+def test_render_respects_note_timing():
+    """Silence before the note starts, sound during it."""
+    audio = render([note(60, 0.5, 1.0)], SR)
+    assert np.max(np.abs(audio[: int(0.45 * SR)])) < 1e-6
+    assert np.max(np.abs(audio[int(0.6 * SR) : int(0.9 * SR)])) > 0.05
+
+
+def test_gaps_between_notes_are_silent():
+    audio = render([note(60, 0.0, 0.3), note(64, 0.6, 0.9)], SR)
+    gap = audio[int(0.40 * SR) : int(0.55 * SR)]
+    assert np.max(np.abs(gap)) < 1e-3
+
+
+def test_output_never_clips():
+    notes = [note(60 + i, i * 0.1, i * 0.1 + 0.5) for i in range(8)]
+    assert np.max(np.abs(render(notes, SR))) <= 1.0
+
+
+def test_notes_are_played_at_the_snapped_pitch_not_the_hummed_one():
+    """A note hummed 40 cents flat must still play back as the note we printed."""
+    from humm2melody.pitch import detect_pitch, midi_to_hz
+
+    flat = midi_to_hz(69) * 2 ** (-0.4 / 12)
+    audio = render([note(69, 0.0, 0.6, freq=flat)], SR)
+    middle = audio[int(0.15 * SR) : int(0.15 * SR) + 2048]
+    detected, _ = detect_pitch(middle, SR)
+    assert detected == pytest.approx(440.0, rel=0.02)
+
+
+def test_round_trip_render_then_detect():
+    """Render notes to audio, run them back through the detector, get them back."""
+    original = [
+        note(60, 0.0, 0.4),
+        note(62, 0.55, 0.95),
+        note(64, 1.1, 1.5),
+        note(67, 1.65, 2.15),
+    ]
+    detected = segment_notes(analyse(render(original, SR), SR))
+
+    assert [n.name for n in detected] == [n.name for n in original]
+    for got, want in zip(detected, original):
+        assert got.start == pytest.approx(want.start, abs=0.08)
+        assert got.duration == pytest.approx(want.duration, abs=0.12)
+
+
+def test_round_trip_keeps_repeated_notes_separate():
+    original = [note(67, 0.0, 0.35), note(67, 0.5, 0.85), note(67, 1.0, 1.35)]
+    detected = segment_notes(analyse(render(original, SR), SR))
+    assert [n.name for n in detected] == ["G4", "G4", "G4"]
