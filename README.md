@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (193 tests, no microphone required). But treat it
+> It works, and it is tested (203 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
@@ -189,7 +189,19 @@ are dropped.
 **4. Display.** The timeline is drawn from the note list at whatever width the
 terminal has, one row per semitone with white keys bright and black keys dimmed.
 
-**5. Playback.** Each note is rendered as a fundamental plus two quiet harmonics
+**5. Playback.** Audio is *pushed* to the device with blocking writes from a
+worker thread, not *pulled* by a Python callback. That difference is audible.
+A callback has to acquire the GIL to run, so whenever the UI thread is busy
+rendering the terminal, the callback misses its deadline and the device is
+handed nothing — producing exactly one click per buffer period. That was
+diagnosed from a phone recording of the speakers: the artefact bursts were
+spaced 64 ms apart, matching the 65 ms output buffer almost exactly, and the
+rendered file itself had *zero* energy above 4 kHz. With blocking writes the
+device is fed from PortAudio's own ring buffer by C code that never needs the
+GIL, and `write()` releases the GIL while it waits, so a stalled UI costs
+latency rather than clicks.
+
+Each note is rendered as a fundamental plus two quiet harmonics
 under an attack/decay/release envelope — a bare sine reads as a beep and blurs
 together on repeated notes, whereas an audible attack makes each one distinct.
 Notes are played at their **snapped** pitch, not the raw hummed frequency: the

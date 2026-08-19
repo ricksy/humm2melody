@@ -138,8 +138,24 @@ def device_sample_rate(fallback: int = SAMPLE_RATE) -> int:
     return rate if 8000 <= rate <= 192000 else fallback
 
 
+BLOCK = 1024
+"""Frames handed to PortAudio per write. ~21 ms at 48 kHz."""
+
+LEAD_IN = 0.05
+"""Silence before the audio, so the ring buffer is never caught empty."""
+
+
 class Player:
-    """Non-blocking playback with a position readout for the playhead."""
+    """Non-blocking playback with a position readout for the playhead.
+
+    Audio is pushed with blocking writes from a worker thread rather than
+    pulled by a Python callback. That difference is audible: a callback has to
+    acquire the GIL to run, so whenever the UI thread is busy rendering, the
+    callback misses its deadline and the device is handed nothing -- one click
+    per buffer period. With blocking writes the device is fed from PortAudio's
+    own ring buffer by C code that never needs the GIL, and `write()` releases
+    the GIL while it waits, so a stalled UI costs latency instead of clicks.
+    """
 
     def __init__(self, sample_rate: int | None = None) -> None:
         # None means "match the output device", resolved when play() is called.
@@ -148,17 +164,23 @@ class Player:
         self._stream = None
         self._buffer = np.zeros(0, dtype=np.float32)
         self._cursor = 0
-        self.underruns = 0
-        self._lock = threading.Lock()
+        self._latency_frames = 0
+        self._worker: threading.Thread | None = None
+        self._halt = threading.Event()
 
     @property
     def playing(self) -> bool:
-        return self._stream is not None
+        return self._worker is not None and self._worker.is_alive()
 
     @property
     def position(self) -> float:
-        """Seconds into the melody, for drawing the playhead."""
-        return self._cursor / self.sample_rate
+        """Seconds of audio actually audible, for drawing the playhead.
+
+        The writer runs ahead of the speaker by whatever PortAudio has
+        buffered, so that much is subtracted or the playhead leads the sound.
+        """
+        played = self._cursor - self._latency_frames
+        return max(0.0, played / self.sample_rate)
 
     def play(self, notes: list[Note]) -> None:
         """Start playing the transcription. Restarts cleanly if already playing."""
@@ -175,47 +197,75 @@ class Player:
         if buffer.size == 0:
             return
 
-        self._buffer = buffer
+        lead = np.zeros(int(LEAD_IN * self.sample_rate), dtype=np.float32)
+        self._buffer = np.concatenate([lead, buffer])
         self._cursor = 0
-        self.underruns = 0
+        self._halt.clear()
 
-        def callback(outdata, frames, _time_info, status) -> None:
-            if status.output_underflow:
-                self.underruns += 1
-            # No lock here: a Python lock in the audio callback risks stalling
-            # it behind the UI thread. A plain int read/write is atomic enough,
-            # and the only reader is the playhead, where a stale frame is
-            # invisible.
-            start = self._cursor
-            chunk = self._buffer[start : start + frames]
-            self._cursor = start + chunk.size
+        try:
+            stream = sd.OutputStream(
+                samplerate=self.sample_rate,
+                channels=1,
+                dtype="float32",
+                blocksize=BLOCK,
+                latency="high",
+                callback=None,  # blocking write mode
+            )
+            stream.start()
+        except Exception:
+            self._stream = None
+            raise
 
-            outdata[: chunk.size, 0] = chunk
-            if chunk.size < frames:
-                outdata[chunk.size :, 0] = 0.0
-                raise sd.CallbackStop
+        self._stream = stream
+        self._latency_frames = int(float(stream.latency) * self.sample_rate)
+        self._worker = threading.Thread(target=self._pump, daemon=True)
+        self._worker.start()
 
-        self._stream = sd.OutputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype="float32",
-            latency="high",  # prefer a safe buffer over low latency
-            callback=callback,
-            finished_callback=self._on_finished,
-        )
-        self._stream.start()
+    def _pump(self) -> None:
+        """Feed the device until the buffer runs out or playback is stopped."""
+        stream = self._stream
+        try:
+            while not self._halt.is_set() and stream is not None:
+                start = self._cursor
+                if start >= self._buffer.size:
+                    break
+                chunk = self._buffer[start : start + BLOCK]
+                if chunk.size < BLOCK:
+                    chunk = np.concatenate(
+                        [chunk, np.zeros(BLOCK - chunk.size, dtype=np.float32)]
+                    )
+                # Releases the GIL while it waits for room in the ring buffer.
+                stream.write(chunk)
+                self._cursor = start + BLOCK
+        except Exception:
+            pass
+        finally:
+            self._close(stream)
 
-    def _on_finished(self) -> None:
-        self._stream = None
+    def _close(self, stream) -> None:
+        if stream is None:
+            return
+        try:
+            if not self._halt.is_set():
+                stream.stop()  # let what is already buffered finish
+            stream.close()
+        except Exception:
+            pass
+        if self._stream is stream:
+            self._stream = None
 
     def stop(self) -> None:
+        self._halt.set()
         stream = self._stream
         self._stream = None
         if stream is not None:
             try:
-                stream.stop()
+                stream.abort()
                 stream.close()
             except Exception:
                 pass
-        with self._lock:
-            self._cursor = 0
+        worker = self._worker
+        self._worker = None
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=1.0)
+        self._cursor = 0

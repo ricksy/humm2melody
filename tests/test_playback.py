@@ -81,3 +81,92 @@ def test_round_trip_keeps_repeated_notes_separate():
     original = [note(67, 0.0, 0.35), note(67, 0.5, 0.85), note(67, 1.0, 1.35)]
     detected = segment_notes(analyse(render(original, SR), SR))
     assert [n.name for n in detected] == ["G4", "G4", "G4"]
+
+
+# -- resampling and the hum/tone overlay -----------------------------------
+
+
+def test_resample_is_a_no_op_at_the_same_rate():
+    from humm2melody.playback import resample
+
+    audio = np.sin(np.arange(1000) * 0.1).astype(np.float32)
+    assert np.array_equal(resample(audio, SR, SR), audio)
+
+
+def test_resample_changes_length_proportionally():
+    from humm2melody.playback import resample
+
+    audio = np.zeros(1000, dtype=np.float32)
+    assert resample(audio, 22050, 44100).size == pytest.approx(2000, abs=2)
+    assert resample(audio, 44100, 22050).size == pytest.approx(500, abs=2)
+
+
+def test_resample_preserves_a_tone():
+    """A resampled tone must still read as the same pitch."""
+    from humm2melody.pitch import detect_pitch
+    from humm2melody.playback import resample
+
+    t = np.arange(22050) / 22050
+    tone = np.sin(2 * np.pi * 220.0 * t).astype(np.float32)
+    moved = resample(tone, 22050, 48000)
+    detected, _ = detect_pitch(moved[8000:10048], 48000)
+    assert detected == pytest.approx(220.0, rel=0.02)
+
+
+def test_resample_of_nothing():
+    from humm2melody.playback import resample
+
+    assert resample(np.zeros(0, dtype=np.float32), 22050, 48000).size == 0
+
+
+def test_overlay_contains_both_sources():
+    from humm2melody.playback import mix_hum_with_tones
+
+    hum = (0.3 * np.sin(np.arange(SR) * 0.05)).astype(np.float32)
+    mixed = mix_hum_with_tones(hum, SR, [note(60, 0.0, 0.5)], SR)
+    assert mixed.size >= hum.size
+    assert np.max(np.abs(mixed)) > 0.1
+
+
+def test_overlay_never_clips():
+    from humm2melody.playback import mix_hum_with_tones
+
+    hum = np.ones(SR, dtype=np.float32) * 0.9
+    notes = [note(60 + i, i * 0.2, i * 0.2 + 0.3) for i in range(5)]
+    assert np.max(np.abs(mix_hum_with_tones(hum, SR, notes, SR))) <= 1.0
+
+
+def test_overlay_with_no_notes_is_just_the_hum():
+    from humm2melody.playback import mix_hum_with_tones
+
+    hum = (0.4 * np.sin(np.arange(SR) * 0.05)).astype(np.float32)
+    mixed = mix_hum_with_tones(hum, SR, [], SR)
+    assert np.max(np.abs(mixed)) == pytest.approx(0.4 * 0.85, abs=0.02)
+
+
+def test_overlay_with_no_hum_is_just_the_tones():
+    from humm2melody.playback import mix_hum_with_tones
+
+    mixed = mix_hum_with_tones(
+        np.zeros(0, dtype=np.float32), SR, [note(60, 0.0, 0.4)], SR
+    )
+    assert np.max(np.abs(mixed)) > 0.1
+
+
+def test_player_starts_idle_and_stop_is_idempotent():
+    from humm2melody.playback import Player
+
+    player = Player()
+    assert player.playing is False
+    player.stop()
+    player.stop()
+    assert player.position == 0.0
+
+
+def test_playing_nothing_is_a_no_op():
+    """Must not open a device for an empty buffer."""
+    from humm2melody.playback import Player
+
+    player = Player()
+    player.play_audio(np.zeros(0, dtype=np.float32), SR)
+    assert player.playing is False
