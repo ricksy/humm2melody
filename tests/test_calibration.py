@@ -132,11 +132,49 @@ def test_an_octave_down_reply_is_still_correct():
     assert confident is True
 
 
-def test_a_wrong_shape_is_not_confident():
-    """Right number of notes, wrong intervals: that is a real mistake."""
-    wrong = [0, 0, -3, -3, 0, 0, 0]
+def test_a_slightly_off_performance_still_calibrates():
+    """Being a note or two off is what calibration measures, not a failure.
+
+    Requiring an exact interval match meant a real voice essentially never
+    calibrated: it heard the right number of notes and then refused anyway.
+    """
+    wrong = [0, 0, -1, 0, 0, 1, 0]
+    _, _, names, _, confident = suggest_dials(analyse(sung_back(errors=wrong)))
+    assert confident is True
+    assert len(names) == SCALE_LENGTH
+
+
+def test_a_different_tune_is_refused():
+    """Far enough off and it was not this melody; pairing it would be nonsense."""
+    wrong = [0, 5, -7, 4, -6, 8, -5]
     _, _, _, _, confident = suggest_dials(analyse(sung_back(errors=wrong)))
     assert confident is False
+
+
+def test_a_wrong_note_count_is_refused():
+    """Without one note per reference note there is nothing to compare."""
+    _, _, _, _, confident = suggest_dials(analyse(held(60, 3.0)))
+    assert confident is False
+
+
+def test_being_off_is_reported_rather_than_hidden():
+    """Smoothing exists to make a transcription readable, not to flatter you.
+
+    The dial search can land on a low pitch setting, whose clustering pulls
+    nearby pitches together — which would quietly absorb the very mistake the
+    accuracy figure is supposed to report.
+    """
+    clean = calibrate(
+        analyse(held(48)), analyse(held(67)), analyse(sung_back())
+    )
+    off = calibrate(
+        analyse(held(48)),
+        analyse(held(67)),
+        analyse(sung_back(errors=[0, 0, -1, 0, 0, 1, 0])),
+    )
+    assert off.confident is True
+    assert off.calibration.pitch_accuracy_cents > clean.calibration.pitch_accuracy_cents
+    assert off.calibration.pitch_accuracy_cents > 25
 
 
 def test_ties_are_broken_towards_the_middle():
@@ -262,13 +300,29 @@ def test_a_good_run_is_confident_and_explains_itself():
     assert "dials" in result.message
 
 
-def test_a_bad_scale_is_refused_rather_than_guessed():
+def test_a_bad_take_is_refused_rather_than_guessed():
     """Saving a wrong calibration is worse than saving none."""
     result = calibrate(
         analyse(held(48)), analyse(held(67)), analyse(held(60, 3.0))
     )
     assert result.confident is False
     assert "try again" in result.message.lower()
+
+
+def test_the_refusal_message_says_which_problem_it_was():
+    """A message that contradicts itself is worse than no message."""
+    wrong_count = calibrate(
+        analyse(held(48)), analyse(held(67)), analyse(held(60, 3.0))
+    )
+    assert "but the melody has" in wrong_count.message
+
+    wrong_tune = calibrate(
+        analyse(held(48)),
+        analyse(held(67)),
+        analyse(sung_back(errors=[0, 5, -7, 4, -6, 8, -5])),
+    )
+    if not wrong_tune.confident and len(wrong_tune.detected) == SCALE_LENGTH:
+        assert "did not sound like the melody" in wrong_tune.message
 
 
 def test_missing_range_notes_are_refused():

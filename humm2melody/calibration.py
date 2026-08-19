@@ -47,6 +47,16 @@ actually control.
 REFERENCE_MIDIS = [midi for midi, _ in REFERENCE_MELODY]
 SCALE_LENGTH = len(REFERENCE_MIDIS)
 
+MAX_ACCURACY_CENTS = 150.0
+"""How far off the melody a reply can be and still count as that melody.
+
+Deliberately generous. Singing a note or two off is the thing calibration
+*measures*, not a reason to refuse: demanding an exact interval match meant a
+real voice essentially never calibrated. Beyond about a semitone and a half of
+average error, though, it was a different tune and pairing it note-for-note
+with the reference would produce meaningless numbers.
+"""
+
 
 def reference_notes() -> list[Note]:
     """The reference melody as playable notes."""
@@ -134,20 +144,6 @@ def measure_note(frames: list[PitchFrame]) -> int | None:
     return int(round(float(np.median(midis))))
 
 
-def _interval_errors(sung: list[int], reference: list[int]) -> int:
-    """How many steps of the melody were sung by the wrong interval.
-
-    Compared as intervals, not absolute pitches: a voice that cannot reach the
-    reference octave will sing the tune transposed, and that is a correct
-    performance, not an error.
-    """
-    if len(sung) != len(reference):
-        return max(len(sung), len(reference))
-    want = [b - a for a, b in zip(reference, reference[1:])]
-    got = [b - a for a, b in zip(sung, sung[1:])]
-    return sum(1 for a, b in zip(want, got) if a != b)
-
-
 def compare_to_reference(
     pitches: list[float], reference: list[int]
 ) -> tuple[float, int]:
@@ -180,20 +176,25 @@ def suggest_dials(
         for pause in range(PAUSE_MIN, PAUSE_MAX + 1):
             notes = segment_with_sensitivity(frames, pitch, pause)
             names = [n.name for n in notes]
-            midis = [n.midi for n in notes]
             pitches = [n.pitch or float(n.midi) for n in notes]
 
+            # Getting the count right comes first: without one note per
+            # reference note there is nothing to compare. After that, prefer
+            # the setting whose pitches land closest to the tune -- a
+            # continuous measure, so near-misses rank above wild ones instead
+            # of all being equally "wrong".
             count_error = abs(len(notes) - len(reference))
-            interval_error = _interval_errors(midis, reference)
+            accuracy, _ = compare_to_reference(pitches, reference)
             distance_from_middle = abs(pitch - 5) + abs(pause - 5)
-            score = (count_error * 4 + interval_error * 2, distance_from_middle)
+            score = (count_error, round(accuracy), distance_from_middle)
 
             if best is None or score < best[0]:
                 best = (score, pitch, pause, names, pitches)
 
     assert best is not None
-    (structure_error, _), pitch, pause, names, pitches = best
-    return pitch, pause, names, pitches, structure_error == 0
+    (count_error, accuracy, _), pitch, pause, names, pitches = best
+    confident = count_error == 0 and accuracy <= MAX_ACCURACY_CENTS
+    return pitch, pause, names, pitches, confident
 
 
 def calibrate(
@@ -210,7 +211,18 @@ def calibrate(
         low, high = high, low  # sung in the wrong order; harmless to fix
 
     pitch, pause, detected, pitches, confident = suggest_dials(scale_frames)
-    accuracy, transpose = compare_to_reference(pitches, REFERENCE_MIDIS)
+
+    # Measure accuracy with clustering and merging switched off. Those exist to
+    # make a transcription readable by pulling nearby pitches together, which
+    # is exactly what would launder the error we are trying to report: at a low
+    # pitch dial a semitone mistake gets quietly absorbed into its neighbour.
+    honest = segment_with_sensitivity(
+        scale_frames, pitch, pause, cluster_tolerance=0.0, merge_within=0.0
+    )
+    honest_pitches = [n.pitch or float(n.midi) for n in honest]
+    if len(honest_pitches) != len(REFERENCE_MIDIS):
+        honest_pitches = pitches
+    accuracy, transpose = compare_to_reference(honest_pitches, REFERENCE_MIDIS)
 
     report = diagnose_frames(scale_frames)
     midis = voiced_midis(scale_frames)
@@ -227,10 +239,16 @@ def calibrate(
         measured_at=measured_at,
     )
 
-    if not confident:
+    if not confident and len(detected) != SCALE_LENGTH:
         message = (
-            f"Heard {len(detected)} notes, not the {SCALE_LENGTH} of the melody. "
-            "Nothing was saved — try again, holding each note a little longer."
+            f"Heard {len(detected)} notes, but the melody has {SCALE_LENGTH}. "
+            "Nothing was saved — try again, holding each note a little longer "
+            "and leaving a clear gap between them."
+        )
+    elif not confident:
+        message = (
+            f"That did not sound like the melody — about {accuracy:.0f} cents "
+            "off on average. Nothing was saved. Press l to hear it again."
         )
     elif low is None or high is None:
         message = "Could not hear the range notes. Nothing was saved."

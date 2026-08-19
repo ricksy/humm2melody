@@ -67,6 +67,12 @@ sung in.
 one. What happens when a later recording disagrees with the stored profile.
 Whether calibration should prompt to re-run when it goes stale.
 
+**Worth doing:** calibration takes are not saved anywhere. When a calibration
+failed in real use there was no artifact to analyse afterwards, and the cause
+had to be reconstructed from a screenshot. Saving the three takes as an
+ordinary run would make failures diagnosable with the tools that already
+exist.
+
 ---
 
 ## 2. Training mode

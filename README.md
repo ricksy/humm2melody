@@ -22,7 +22,7 @@ a transcription came out the way it did.
 > conversational prompts. I described what I wanted, pushed back on what came
 > out, and it wrote the code. I did not hand-write the DSP.
 >
-> It works, and it is tested (325 tests, no microphone required). But treat it
+> It works, and it is tested (329 tests, no microphone required). But treat it
 > accordingly: it has had no expert review, the signal-processing choices were
 > made by a model rather than by someone who does this for a living, and the
 > only real-world validation is that it correctly transcribed some humming into
@@ -72,8 +72,10 @@ Everything is compared as **intervals**. If you sing the tune an octave down
 because that is where your voice sits, that is a correct performance — it is
 reported ("you sang it 1 octave down"), not counted against you.
 
-If no setting recovers the melody, it says so and **saves nothing**. A wrong
-calibration is worse than none.
+Being a note or two off is fine — that is the thing being *measured*, and it is
+reported back as an accuracy figure. Only a genuinely different tune, or a take
+where the notes cannot be told apart, is refused. When it does refuse it
+**saves nothing**: a wrong calibration is worse than none.
 
 The Training tab is still a placeholder. See `docs/ROADMAP.md`.
 
