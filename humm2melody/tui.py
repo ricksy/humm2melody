@@ -267,6 +267,31 @@ class PianoRoll(Static):
     def action_done(self) -> None:
         self.app.action_edit_notes()
 
+    def on_click(self, event) -> None:
+        """Pick the note under the pointer."""
+        index = self._note_at(event.x, event.y)
+        if index is not None:
+            self.app.edit_click(index)
+
+    def _note_at(self, x: int, y: int) -> int | None:
+        if self._geometry is None or not self._notes:
+            return None
+        lo, hi, label_w, width, span = self._geometry
+
+        midi = hi - y
+        if not (lo <= midi <= hi):
+            return None
+
+        column = x - (label_w + 1)
+        if not (0 <= column < width):
+            return None
+        when = (column + 0.5) / width * span
+
+        for index, note in enumerate(self._notes):
+            if note.midi == midi and note.start <= when < note.end:
+                return index
+        return None
+
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self._notes: list[Note] = []
@@ -274,6 +299,8 @@ class PianoRoll(Static):
         self._scheme: str = "english"
         self._playhead: float | None = None
         self._head_col: int | None = None
+        # Geometry of the last draw, so a click can be mapped back to a note.
+        self._geometry: tuple[int, int, int, int, float] | None = None
 
     def show(
         self,
@@ -338,6 +365,8 @@ class PianoRoll(Static):
         hi = max(n.midi for n in notes)
         if hi - lo + 1 > MAX_ROLL_ROWS:
             hi = lo + MAX_ROLL_ROWS - 1
+
+        self._geometry = (lo, hi, label_w, width, span)
 
         out = Text()
         for midi in range(hi, lo - 1, -1):
@@ -406,6 +435,13 @@ class MelodySequence(Static):
         self._active: int | None = None
         self._selected: int | None = None
         self._scheme: str = "english"
+        self._spans: list[tuple[int, int, int]] = []
+
+    def on_click(self, event) -> None:
+        for start, end, index in self._spans:
+            if start <= event.x < end:
+                self.app.edit_click(index)
+                return
 
     def show(
         self,
@@ -429,10 +465,12 @@ class MelodySequence(Static):
             self.update(Text(""))
             return
         text = Text("Play this:  ", style="bold")
+        self._spans = []
         for i, n in enumerate(self._notes):
             if i:
                 gap = n.start - self._notes[i - 1].end
                 text.append("  ·  " if gap > 0.25 else "  ", style="dim")
+            column = len(text.plain)
             name = spell(n.midi, self._scheme)
             if i == self._active:
                 text.append(f" {name} ", style=f"bold black on {HIGHLIGHT}")
@@ -440,6 +478,7 @@ class MelodySequence(Static):
                 text.append(f"[{name}]", style=f"bold {SELECTED}")
             else:
                 text.append(name, style=f"bold {ACCENT}")
+            self._spans.append((column, len(text.plain), i))
         self.update(text)
 
 
@@ -958,6 +997,28 @@ class ProfileScreen(ModalScreen[Profile]):
         )
 
 
+class DetailTable(Static):
+    """The per-note table, with clickable rows."""
+
+    HEADER_LINES = 3
+    """Rich draws a top border, the header, then a separator above row one."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._count = 0
+
+    def show(
+        self, notes: list[Note], selected: int | None, scheme: str
+    ) -> None:
+        self._count = len(notes)
+        self.update(_detail_table(notes, selected, scheme) if notes else Text(""))
+
+    def on_click(self, event) -> None:
+        row = event.y - self.HEADER_LINES
+        if 0 <= row < self._count:
+            self.app.edit_click(row)
+
+
 class Humm2MelodyApp(App):
     """Hum a melody, get the notes to play."""
 
@@ -1120,7 +1181,7 @@ class Humm2MelodyApp(App):
                     with VerticalScroll(id="results"):
                         yield PianoRoll(id="roll")
                         yield MelodySequence(id="sequence")
-                        yield Static(id="detail")
+                        yield DetailTable(id="detail")
                     with Vertical(id="sidebar"):
                         yield Static("Recordings", id="sidebar-title")
                         yield Static(id="sidebar-path")
@@ -1260,7 +1321,7 @@ class Humm2MelodyApp(App):
             lead = f"Saved as {saved.path.name} · " if saved else ""
             self._set_hint(f"{lead}p to play it back · space to hum again")
         else:
-            self.query_one("#detail", Static).update(
+            self.query_one("#detail", DetailTable).update(
                 Text(
                     "No notes detected. Try humming louder, closer to the mic, "
                     "and hold each note a little longer.",
@@ -1469,6 +1530,29 @@ class Humm2MelodyApp(App):
             if runs is not None:
                 runs.focus()
             self._set_hint("Done editing.")
+        self._show_notes(self.notes)
+
+    def edit_click(self, index: int) -> None:
+        """Select a note that was clicked, entering edit mode if needed.
+
+        Clicking is how most people will reach for this, so it should not
+        require knowing about `e` first.
+        """
+        if not self.notes or not (0 <= index < len(self.notes)):
+            return
+        if self._active_tab() != "tab-record":
+            return
+
+        self.selected_note = index
+        if not self.editing:
+            self.editing = True
+            self._set_hint(
+                "← → pick · ↑ ↓ pitch · , . move · - = length · "
+                "i add · del remove · z undo · esc done"
+            )
+        roll = self._find("#roll", PianoRoll)
+        if roll is not None:
+            roll.focus()  # so the arrows reach the editor, not the sidebar
         self._show_notes(self.notes)
 
     def edit_select(self, delta: int) -> None:
@@ -2009,9 +2093,7 @@ class Humm2MelodyApp(App):
         self.query_one("#roll", PianoRoll).show(notes, chosen, self.notation)
         self.query_one("#sequence", MelodySequence).show(notes, chosen, self.notation)
         self.query_one("#play", Button).disabled = not (notes or self.audio is not None)
-        self.query_one("#detail", Static).update(
-            _detail_table(notes, chosen, self.notation) if notes else Text("")
-        )
+        self.query_one("#detail", DetailTable).show(notes, chosen, self.notation)
 
     def action_less_sensitive(self) -> None:
         self._set_dials(self.sensitivity - 1, self.pause_sensitivity)

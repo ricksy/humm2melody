@@ -1806,3 +1806,160 @@ async def test_insert_and_delete_reach_the_saved_run(tmp_path: Path):
         await pilot.press("delete")
         await pilot.pause()
         assert len(app.store.list()[0].notes) == len(app.notes)
+
+
+# -- clicking a note -------------------------------------------------------
+
+
+async def test_clicking_the_sequence_selects_that_note(tmp_path: Path):
+    from humm2melody.tui import MelodySequence
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(110, 70)) as pilot:
+        await record_once(pilot)
+        sequence = app.query_one("#sequence", MelodySequence)
+        start, end, index = sequence._spans[1]
+
+        await pilot.click(sequence, offset=(start, 0))
+        await pilot.pause()
+        assert app.selected_note == index
+        assert app.editing is True
+
+
+async def test_clicking_the_sequence_enters_edit_mode(tmp_path: Path):
+    """Clicking should not require knowing about `e` first."""
+    from humm2melody.tui import MelodySequence
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(110, 70)) as pilot:
+        await record_once(pilot)
+        assert app.editing is False
+
+        sequence = app.query_one("#sequence", MelodySequence)
+        await pilot.click(sequence, offset=(sequence._spans[0][0], 0))
+        await pilot.pause()
+        assert app.editing is True
+
+
+async def test_a_clicked_note_can_then_be_edited(tmp_path: Path):
+    from humm2melody.tui import MelodySequence
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(110, 70)) as pilot:
+        await record_once(pilot)
+        sequence = app.query_one("#sequence", MelodySequence)
+        await pilot.click(sequence, offset=(sequence._spans[2][0], 0))
+        await pilot.pause()
+
+        before = app.notes[2].midi
+        await pilot.press("up")
+        await pilot.pause()
+        assert app.notes[2].midi == before + 1
+
+
+async def test_a_clicked_note_can_be_deleted(tmp_path: Path):
+    from humm2melody.tui import MelodySequence
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(110, 70)) as pilot:
+        await record_once(pilot)
+        gone = app.notes[1].name
+        sequence = app.query_one("#sequence", MelodySequence)
+        await pilot.click(sequence, offset=(sequence._spans[1][0], 0))
+        await pilot.press("delete")
+        await pilot.pause()
+
+        assert len(app.notes) == 2
+        assert gone not in [n.name for n in app.notes]
+
+
+async def test_clicking_the_table_selects_that_row(tmp_path: Path):
+    from humm2melody.tui import DetailTable
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(110, 70)) as pilot:
+        await record_once(pilot)
+        table = app.query_one("#detail", DetailTable)
+
+        await pilot.click(table, offset=(4, DetailTable.HEADER_LINES + 1))
+        await pilot.pause()
+        assert app.selected_note == 1
+
+
+async def test_clicking_the_table_header_selects_nothing(tmp_path: Path):
+    from humm2melody.tui import DetailTable
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(110, 70)) as pilot:
+        await record_once(pilot)
+        table = app.query_one("#detail", DetailTable)
+
+        await pilot.click(table, offset=(4, 0))
+        await pilot.pause()
+        assert app.editing is False
+
+
+async def test_clicking_the_timeline_selects_that_note(tmp_path: Path):
+    from humm2melody.tui import PianoRoll
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(110, 70)) as pilot:
+        await record_once(pilot)
+        roll = app.query_one("#roll", PianoRoll)
+        lo, hi, label_w, width, span = roll._geometry
+
+        target = app.notes[1]
+        mid = (target.start + target.end) / 2
+        x = label_w + 1 + int(mid / span * width)
+        y = hi - target.midi
+
+        await pilot.click(roll, offset=(x, y))
+        await pilot.pause()
+        assert app.selected_note == 1
+
+
+async def test_clicking_empty_timeline_selects_nothing(tmp_path: Path):
+    from humm2melody.tui import PianoRoll
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(110, 70)) as pilot:
+        await record_once(pilot)
+        roll = app.query_one("#roll", PianoRoll)
+        lo, hi, label_w, width, span = roll._geometry
+
+        # A row with no note on it at all.
+        empty = next(m for m in range(lo, hi + 1) if all(n.midi != m for n in app.notes))
+        await pilot.click(roll, offset=(label_w + 2, hi - empty))
+        await pilot.pause()
+        assert app.editing is False
+
+
+async def test_clicking_the_row_labels_selects_nothing(tmp_path: Path):
+    from humm2melody.tui import PianoRoll
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(110, 70)) as pilot:
+        await record_once(pilot)
+        roll = app.query_one("#roll", PianoRoll)
+        await pilot.click(roll, offset=(0, 0))
+        await pilot.pause()
+        assert app.editing is False
+
+
+async def test_all_three_views_agree_on_the_selection(tmp_path: Path):
+    """Clicking one view should highlight the note in the other two."""
+    from humm2melody.tui import DetailTable, MelodySequence
+
+    app = make_app(tmp_path)
+    async with app.run_test(size=(110, 70)) as pilot:
+        await record_once(pilot)
+        table = app.query_one("#detail", DetailTable)
+        await pilot.click(table, offset=(4, DetailTable.HEADER_LINES + 2))
+        await pilot.pause()
+
+        assert app.selected_note == 2
+        sequence = str(app.query_one("#sequence", MelodySequence).content)
+        assert f"[{app.notes[2].name}]" in sequence
+        # The table holds a Rich Table, so check its cells rather than its text.
+        markers = list(table.content.columns[0]._cells)
+        assert markers == ["1", "2", "▸"]

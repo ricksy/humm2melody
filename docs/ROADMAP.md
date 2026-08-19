@@ -189,8 +189,11 @@ Notes are re-sorted by start time after every edit and the selection follows
 the note rather than its index, so nudging one past its neighbour cannot leave
 the table out of order.
 
-**Still open.** No multi-select, no copy or paste, no way to edit a run without
-loading it first.
+Notes are also clickable in all three views — the timeline, the sequence line
+and the table — which enters edit mode without needing to know about `e`.
+
+**Still open.** No multi-select, no copy or paste, no dragging a note with the
+mouse, no way to edit a run without loading it first.
 
 ---
 
