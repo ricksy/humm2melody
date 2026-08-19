@@ -7,40 +7,49 @@ most, because several of these are smaller than they look.
 Written to be picked up cold: assume the reader has not seen the conversation
 that produced them.
 
-## Status at v0.9.0
+## Status at v0.13.2
 
 | # | Item | State |
 | --- | --- | --- |
-| 0 | Calibrating and Training tabs | Calibrating **done**, Training still a placeholder |
-| 1 | Per-user vocal calibration | **done**, and wired into detection in v0.8.0 |
-| 2 | Training mode | not started — **next**, and now unblocked by calibration |
-| 3 | Refresh the blog post | **stale** — the post still describes v0.1 |
-| 4 | Rhythm and quantisation | not started — the hard half already exists |
-| 5 | Compressed audio storage | **done in v0.6.0** |
-| 6 | Finish note editing | **done in v0.10.0** |
-| 7 | MIDI / MusicXML export | not started — small and self-contained |
-| 8 | Key detection and transposition | not started — the logic exists, unsurfaced |
-| 9 | Smaller items | mixed, see below |
+| 0 | Calibrating and Training tabs | Calibrating **done in v0.7.0**, Training still a placeholder |
+| 1 | Per-user vocal calibration | **done in v0.7.0**, wired into detection in v0.8.0 |
+| 2 | Training mode | Not started — **next**, and unblocked by calibration |
+| 3 | Refresh the blog post | **Stale.** The post still describes v0.1 |
+| 4 | Rhythm and quantisation | Not started — the hard half already exists |
+| 5 | Compressed audio storage | **Done in v0.6.0** |
+| 6 | Finish note editing | **Done in v0.10.0**, extended in v0.11.0 and v0.13.0 |
+| 7 | MIDI / MusicXML export | Not started — small and self-contained |
+| 8 | Key detection and transposition | Not started — the logic exists, unsurfaced |
+| 9 | Smaller items | Mixed, see below |
 
-Shipped since this file was written: profiles and tabs (v0.5.0), FLAC and MP3
-storage (v0.6.0), calibration (v0.7.0), and a fix for the `analyze` command's
-defaults having drifted out of sync with the app.
+Shipped since this file was first written: profiles and tabs (v0.5.0), FLAC and
+MP3 storage (v0.6.0), calibration (v0.7.0), calibration feeding detection and
+per-profile tab memory (v0.8.0), note editing and notation schemes (v0.9.0),
+insert/delete/undo (v0.10.0), click-to-edit (v0.11.0), the piano keyboard and
+tempo dial (v0.12.0), and a playable keyboard with richer playback voices
+(v0.13.0).
 
-**Recommended next:** item 2, training mode — or item 3, the blog post, which
-is now ten versions out of date. Calibration now supplies what it
-was missing — a per-user notion of what "correct" means, and a reference melody
-with scoring that already measures accuracy in cents.
+Three items on this list are now covered by shipped work and are marked as such
+below: item 6 is finished, item 9's "starred-first sorting" remains a deliberate
+no, and item 9's "re-analyse from the CLI" is served by `analyze --sweep`.
+
+**Recommended next:** item 2, training mode — or item 3, the blog post, which is
+now twelve versions out of date. Calibration supplies what training was missing:
+a per-user notion of what "correct" means, and a reference melody with scoring
+that already measures accuracy in cents.
 
 ---
 
 ## 0. Fill in the Calibrating and Training tabs
 
-**Scaffolding is done.** Both tabs exist, each with a placeholder explaining
-what it is for. Profiles exist and are chosen at startup, so there is somewhere
-to put what calibration learns: `Profile.calibration` is defined and persisted,
-with every field currently `None`. Runs record which profile made them.
+**Half done.** The Calibrating tab is finished — see item 1. The Training tab is
+still the original placeholder.
 
-What remains is the content, which is items 1 and 2.
+Everything the placeholder needed is in place: profiles are chosen at startup,
+`Profile.calibration` is populated by a real calibration run rather than sitting
+at `None`, and each saved run records which profile made it.
+
+What remains is item 2.
 
 ---
 
